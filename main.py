@@ -1,11 +1,12 @@
 import json
+import os
 from Player import Player, PlayerEventType
 import threading
 import time
 import tkinter as tk
 import random
 from Constants import *
-from tkinter import ttk
+from tkinter import ttk, filedialog
 from tkinter.messagebox import askyesno
 from MarqueeLabel import MarqueeLabel
 from YTLoader import YTLoader
@@ -29,18 +30,16 @@ class MusicPlayerGUI:
 
         with open(f'assets/queue.json', 'r', encoding='utf-8') as jfile:
             self.queue_data = json.load(jfile)['queue']
-
         self.queue_title = [data['title'] for data in self.queue_data]
 
         with open(f'assets/saved.json', 'r', encoding='utf-8') as jfile:
             self.saved_data = json.load(jfile)['saved']
-
         self.saved_title = [data['title'] for data in self.saved_data]
 
     def intitializeUI(self):
         self.master.geometry('745x350')
         self.master.title("Music Player")
-        # self.master.iconbitmap("assets/icon.ico")
+        self.master.iconbitmap("assets/icon.ico")
         self.master.config(bg="#eeeeee", padx = 5, pady = 5)
 
         self.createFrames()
@@ -109,7 +108,6 @@ class MusicPlayerGUI:
         Label.config(bg=PLAYER_BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
         Label.grid(row=0, column=0)
 
-
         self.display_title = MarqueeLabel(self.player_middle_info_frame, text="", scroll_delay=250)
         self.display_title.config(font=("Microsoft JhengHei UI", 12), anchor="w", width=18)
         self.display_title.config(bg=PLAYER_BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
@@ -119,7 +117,6 @@ class MusicPlayerGUI:
         Label = tk.Label(self.player_middle_info_frame, text="作者: ", font=("Microsoft JhengHei UI", 12), anchor="w", width=7)
         Label.config(bg=PLAYER_BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
         Label.grid(row=1, column=0)
-        
 
         self.display_author = tk.StringVar()
         Label = tk.Label(self.player_middle_info_frame, textvariable=self.display_author, text="", font=("Microsoft JhengHei UI", 12), anchor="w", width=18, bg="#cccccc")
@@ -144,7 +141,7 @@ class MusicPlayerGUI:
 
         # 搜尋欄
         self.query_strvar = tk.StringVar()
-        Entry = ttk.Entry(self.dashboard_left_input_frame,  textvariable=self.query_strvar, width=35)
+        Entry = ttk.Entry(self.dashboard_left_input_frame,  textvariable=self.query_strvar, width=34)
         Entry.grid(row=0, column=0)
 
         # 搜尋結果
@@ -201,6 +198,14 @@ class MusicPlayerGUI:
         self.download_btn = ttk.Button(self.dashboard_left_btn_frame, text="下載", width=DEAFULT_BUTTON_WIDTH, command=self.download)
         self.download_btn.grid(row=0, column=2, padx=1, pady=2)
 
+        # 匯入歌單
+        self.attachFile_import_btn = ttk.Button(self.dashboard_left_btn_frame, text="匯入歌單", width=DEAFULT_BUTTON_WIDTH, command=self.attachFileImport)
+        self.attachFile_import_btn.grid(row=1, column=0, padx=1, pady=2)
+
+        # 匯出歌單
+        self.attachFile_export_btn = ttk.Button(self.dashboard_left_btn_frame, text="匯出歌單", width=DEAFULT_BUTTON_WIDTH, command=self.attachFileExport)
+        self.attachFile_export_btn.grid(row=1, column=1, padx=1, pady=2)
+
     def applyStyle(self):
         self.master.config(bg=BACKGROUND_COLOR)
 
@@ -252,6 +257,7 @@ class MusicPlayerGUI:
 
         self.display_title.update_text('')
         self.display_author.set('')
+        self.updateThumbnail()
 
     def play(self):
             if self.player.get_state() == -1:
@@ -261,12 +267,23 @@ class MusicPlayerGUI:
                 
                 play_title = self.queue_title.pop(0)
                 play_data = self.queue_data.pop(0)
-                play_path = play_data['url'] if play_data['saved_dist'] is None else play_data['saved_dist']
+                self.queue_strvar.set(self.queue_title)
 
+                if play_data['saved_dist'] is None:
+                    if os.system('ping youtube.com -n 1'):
+                        self.updateLog('Please check internet', LOG_ERROR_COLOR)
+                        self.stop()
+                        return
+                    
+                    play_path = play_data['url']
+                    
+                else:
+                    play_path = play_data['saved_dist']
+                
                 self.display_title.update_text(f'{play_title}     ')
                 self.display_author.set(play_data['author'])
                 self.updateThumbnail(play_data['thumbnail_url'])
-                self.queue_strvar.set(self.queue_title)
+                
                 self.player.play(play_path)
                 self.is_stopped = False
                 self.playingChecker()
@@ -370,8 +387,13 @@ class MusicPlayerGUI:
             
         if askyesno('Delete Saved', '確認刪除?'):
             for i, selection in enumerate(selections):
-                self.saved_data.pop(selection-i)
-                self.saved_title.pop(selection-i)
+                deleted_title = self.saved_title.pop(selection-i)
+                deleted_data = self.saved_data.pop(selection-i)
+                if deleted_data['saved_dist'] is not None:
+                    if deleted_title in self.queue_title:
+                        self.queue_data[self.queue_title.index(deleted_title)]['saved_dist'] = None
+
+                    os.remove(deleted_data['saved_dist'])
 
         self.saved_strvar.set(self.saved_title)
         jdata = {'saved': self.saved_data}
@@ -400,6 +422,50 @@ class MusicPlayerGUI:
 
         tdownload = threading.Thread(target=download_thread)
         tdownload.start()
+
+    def attachFileImport(self):
+        file_path = filedialog.askopenfilename(title="Import Playlist", filetypes= [("Json files","*.json")])
+        if file_path:
+            with open(file_path, 'r', encoding='utf-8') as jfile:
+                self.saved_data = json.load(jfile)['saved']
+
+            self.saved_title = [data['title'] for data in self.saved_data]
+
+            audio_folder = 'assets\\audio'
+            try:
+                exists_audio = os.listdir(audio_folder)
+
+            except FileNotFoundError:
+                os.mkdir(audio_folder)
+                exists_audio = os.listdir(audio_folder)
+                
+            data_dict = {data['title']: i for i, data in enumerate(self.saved_data)}
+            for audio in exists_audio:
+                for title in data_dict:
+                    if audio.startswith(title):
+                        self.saved_data[data_dict[title]]['saved_dist'] = f'{audio_folder}\\{audio}'
+                        break
+
+            jdata = {'saved': self.saved_data}
+            with open(f'assets/saved.json', 'w', encoding='utf-8') as jfile:
+                json.dump(jdata, jfile, ensure_ascii=False, indent=4)
+
+            self.saved_strvar.set(self.saved_title)
+            self.updateLog('Imported Playlist', LOG_DONE_COLOR)
+
+    def attachFileExport(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=(("Json files", "*.json"), ("All files", "*.*")))
+        if file_path:
+            export_data = []
+            for i, data in enumerate(self.saved_data):
+                data['saved_dist'] = None
+                export_data.append(data)
+
+            jdata = {'saved': export_data}
+            with open(file_path, 'w', encoding='utf-8') as jfile:
+                json.dump(jdata, jfile, ensure_ascii=False, indent=4)
+
+            self.updateLog('Exported Playlist', LOG_DONE_COLOR)
 
     def updateThumbnail(self, url=None):
         if url is None:

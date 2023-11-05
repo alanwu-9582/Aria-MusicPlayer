@@ -22,7 +22,6 @@ class MarqueeLabel(tk.Label):
         self._text = new_text
         self.config(text=self._text)
 
-
     def stop_marquee(self):
         if self._marquee_task:
             self.after_cancel(self._marquee_task)

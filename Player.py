@@ -106,6 +106,3 @@ class Player:
     # 移除監聽器
     def remove_callback(self, event_type, callback):
         self.media.event_manager().event_detach(event_type, callback)
-
-
-
