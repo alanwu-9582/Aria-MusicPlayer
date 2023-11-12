@@ -10,6 +10,12 @@ PY-MUSIC-PLAYER
 ---
 可以播放與下載 Youtube 音樂的播放器
 
+使用說明
+---
+下載與安裝:
+至 [Releases](https://github.com/alanwu-9582/Py-Music-Player/releases) 下載最新版的 Py-Music-Player_Setup.zip 
+解壓縮後執行 Py-Music-Player_Setup.exe 來完成安裝
+
 功能說明:
 
 * 停止: 停止播放音樂
