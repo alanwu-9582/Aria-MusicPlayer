@@ -1,18 +1,22 @@
 import json
 import os
-from Player import Player, PlayerEventType
 import threading
 import time
-import tkinter as tk
 import random
-from Constants import *
+
+import tkinter as tk
 from tkinter import ttk, filedialog
 from tkinter.messagebox import askyesno
-from MarqueeLabel import MarqueeLabel
-from YTLoader import YTLoader
+
 import requests
 from PIL import Image, ImageTk
 from io import BytesIO
+
+from Constants import *
+from libs.MarqueeLabel import MarqueeLabel
+from libs.LogTextbox import LogTextbox
+from Player import Player, PlayerEventType
+from YTLoader import YTLoader
 
 class MusicPlayerGUI:
     def __init__(self, master):
@@ -25,7 +29,6 @@ class MusicPlayerGUI:
         self.intitializeUI()
         
     def intitializeData(self):
-        self.log_count = 0
         self.is_stopped = True
 
         with open(f'assets/queue.json', 'r', encoding='utf-8') as jfile:
@@ -135,9 +138,8 @@ class MusicPlayerGUI:
         self.volume_slider.set(60)
 
         # Console log
-        self.log = tk.Text(self.dashboard_left_data_frame, width=20,  height=8, font=("System", 10), relief="solid", state=tk.DISABLED)
+        self.log = LogTextbox(self.dashboard_left_data_frame, width=20,  height=8, font=("System", 10), relief="solid")
         self.log.grid(pady=5, columnspan=40)
-        self.log_count = 0
 
         # 搜尋欄
         self.query_strvar = tk.StringVar()
@@ -198,13 +200,17 @@ class MusicPlayerGUI:
         self.download_btn = ttk.Button(self.dashboard_left_btn_frame, text="下載", width=DEAFULT_BUTTON_WIDTH, command=self.download)
         self.download_btn.grid(row=0, column=2, padx=1, pady=2)
 
+        # 重新讀取
+        self.reload_btn = ttk.Button(self.dashboard_left_btn_frame, text="重新加載", width=DEAFULT_BUTTON_WIDTH, command=self.reload)
+        self.reload_btn.grid(row=1, column=0, padx=1, pady=2)
+
         # 匯入歌單
         self.attachFile_import_btn = ttk.Button(self.dashboard_left_btn_frame, text="匯入歌單", width=DEAFULT_BUTTON_WIDTH, command=self.attachFileImport)
-        self.attachFile_import_btn.grid(row=1, column=0, padx=1, pady=2)
+        self.attachFile_import_btn.grid(row=1, column=1, padx=1, pady=2)
 
         # 匯出歌單
         self.attachFile_export_btn = ttk.Button(self.dashboard_left_btn_frame, text="匯出歌單", width=DEAFULT_BUTTON_WIDTH, command=self.attachFileExport)
-        self.attachFile_export_btn.grid(row=1, column=1, padx=1, pady=2)
+        self.attachFile_export_btn.grid(row=1, column=2, padx=1, pady=2)
 
     def applyStyle(self):
         self.master.config(bg=BACKGROUND_COLOR)
@@ -237,6 +243,9 @@ class MusicPlayerGUI:
     def playingChecker(self):
         def playingChecker_thread():
             while not self.player.is_playing():
+                if self.is_stopped:
+                    break
+
                 time.sleep(0.1)
             
             while self.player.is_playing() or self.player.get_state() == 0:
@@ -260,39 +269,39 @@ class MusicPlayerGUI:
         self.updateThumbnail()
 
     def play(self):
-            if self.player.get_state() == -1:
-                if len(self.queue_data) <= 0:
+        if self.player.get_state() == -1:
+            if len(self.queue_data) <= 0:
+                self.stop()
+                return
+            
+            play_title = self.queue_title.pop(0)
+            play_data = self.queue_data.pop(0)
+            self.queue_strvar.set(self.queue_title)
+
+            if play_data['saved_dist'] is None:
+                if os.system('ping youtube.com -n 1'):
+                    self.log.updateLog('Please check internet', LOG_ERROR_COLOR)
                     self.stop()
                     return
                 
-                play_title = self.queue_title.pop(0)
-                play_data = self.queue_data.pop(0)
-                self.queue_strvar.set(self.queue_title)
-
-                if play_data['saved_dist'] is None:
-                    if os.system('ping youtube.com -n 1'):
-                        self.updateLog('Please check internet', LOG_ERROR_COLOR)
-                        self.stop()
-                        return
-                    
-                    play_path = play_data['url']
-                    
-                else:
-                    play_path = play_data['saved_dist']
+                play_path = play_data['url']
                 
-                self.display_title.update_text(f'{play_title}     ')
-                self.display_author.set(play_data['author'])
-                self.updateThumbnail(play_data['thumbnail_url'])
-                
-                self.player.play(play_path)
-                self.is_stopped = False
-                self.playingChecker()
+            else:
+                play_path = play_data['saved_dist']
+            
+            self.display_title.update_text(f'{play_title}     ')
+            self.display_author.set(play_data['author'])
+            self.updateThumbnail(play_data['thumbnail_url'])
+            
+            self.player.play(play_path)
+            self.is_stopped = False
+            self.playingChecker()
 
-            elif self.player.get_state() == 0:
-                self.player.resume()
+        elif self.player.get_state() == 0:
+            self.player.resume()
 
-            elif self.player.get_state() == 1:
-                self.player.pause()        
+        elif self.player.get_state() == 1:
+            self.player.pause()        
                 
     def skip(self):
         self.player.stop()
@@ -320,15 +329,15 @@ class MusicPlayerGUI:
         query = self.query_strvar.get()
         def search_thread():
             self.search_btn.config(state=tk.DISABLED)
-            self.updateLog(f'Search: {query}', LOG_PROCESS_COLOR)
+            self.log.updateLog(f'Search: {query}', LOG_PROCESS_COLOR)
             error = self.loader.search(query)
             if not error:
                 search_reasult = self.loader.getResultsTitle()
                 self.select_combobox.config(values=search_reasult)
-                self.updateLog(f'Search: Find {len(search_reasult)} data', LOG_DONE_COLOR)
+                self.log.updateLog(f'Search: Find {len(search_reasult)} data', LOG_DONE_COLOR)
 
             else:
-                self.updateLog(f'Error: {error}', LOG_ERROR_COLOR)
+                self.log.updateLog(f'Error: {error}', LOG_ERROR_COLOR)
             self.search_btn.config(state=tk.NORMAL)
             
         tsearch = threading.Thread(target=search_thread)
@@ -339,7 +348,7 @@ class MusicPlayerGUI:
         def select_thread():
             if select_index >= 0:
                 self.loader.select(select_index)
-                self.updateLog(f'Loading index: {select_index}', LOG_PROCESS_COLOR)
+                self.log.updateLog(f'Loading index: {select_index}', LOG_PROCESS_COLOR)
                 youtube_info = self.loader.getYoutubeInfo()
                 
                 music_data = {
@@ -358,13 +367,17 @@ class MusicPlayerGUI:
                     self.saved_data.append(music_data)
                     self.saved_title.append(music_data['title'])
 
-                    jdata = {'saved': self.saved_data}
-                    with open(f'assets/saved.json', 'w', encoding='utf-8') as jfile:
-                        json.dump(jdata, jfile, ensure_ascii=False, indent=4)
+                else:
+                    music_data['saved_dist'] = self.saved_data[self.saved_title.index(music_data['title'])]['saved_dist']
+                    self.saved_data[self.saved_title.index(music_data['title'])] = music_data
+
+                jdata = {'saved': self.saved_data}
+                with open(f'assets/saved.json', 'w', encoding='utf-8') as jfile:
+                    json.dump(jdata, jfile, ensure_ascii=False, indent=4)
 
                 self.queue_strvar.set(self.queue_title)
                 self.saved_strvar.set(self.saved_title)
-                self.updateLog(f'Loaded index: {select_index}', LOG_DONE_COLOR)
+                self.log.updateLog(f'Loaded index: {select_index}', LOG_DONE_COLOR)
 
         tselect = threading.Thread(target=select_thread)
         tselect.start()
@@ -407,14 +420,16 @@ class MusicPlayerGUI:
         
         def download_thread():
             for i, selection in enumerate(selections):
-                self.updateLog(f'Downloading: {i+1}/{len(selections)}', LOG_PROCESS_COLOR)
+                self.log.updateLog(f'Downloading: {i+1}/{len(selections)}', LOG_PROCESS_COLOR)
                 
                 download_url = self.saved_data[selection]['watch_url']
                 download_path = self.loader.download(download_url)
                 if not download_path.startswith('Error'):
                     self.saved_data[selection]['saved_dist'] = download_path
+                    if self.saved_title[selection] in self.queue_title:
+                        self.queue_data[self.queue_title.index(self.saved_title[selection])]['saved_dist'] = download_path
 
-            self.updateLog('Finished download', LOG_DONE_COLOR)
+            self.log.updateLog('Finished download', LOG_DONE_COLOR)
 
             jdata = {'saved': self.saved_data}
             with open(f'assets/saved.json', 'w', encoding='utf-8') as jfile:
@@ -422,6 +437,45 @@ class MusicPlayerGUI:
 
         tdownload = threading.Thread(target=download_thread)
         tdownload.start()
+
+    def reload(self):
+        selections = self.saved_listbox.curselection()
+        if len(selections) <= 0:
+            return
+    
+        def reload_thread():
+            for i, selection in enumerate(selections):
+                self.log.updateLog(f'Reloading: {i+1}/{len(selections)}', LOG_PROCESS_COLOR)
+                previous_saved_dist = self.saved_data[selection]['saved_dist']
+                error = self.loader.search(self.saved_data[selection]['watch_url'])
+                if not error:
+                    self.log.updateLog(f'Getting index: {i+1} data', '#8BE5DF')
+                    self.loader.select(0)
+                    youtube_info = self.loader.getYoutubeInfo()
+
+                    music_data = {
+                        'title': self.loader.youtube.title,
+                        'author': self.loader.youtube.author,
+                        'watch_url': self.loader.youtube.watch_url,
+                        'url': youtube_info['url'],
+                        'thumbnail_url': youtube_info['thumbnail'],
+                        'saved_dist': previous_saved_dist
+                    }
+
+                    self.saved_data[selection] = music_data
+
+                else:
+                    self.log.updateLog(f'Error: {error}', LOG_ERROR_COLOR)
+                    continue
+
+            jdata = {'saved': self.saved_data}
+            with open(f'assets/saved.json', 'w', encoding='utf-8') as jfile:
+                json.dump(jdata, jfile, ensure_ascii=False, indent=4)
+
+            self.log.updateLog('Finished reload', LOG_DONE_COLOR)
+
+        treload = threading.Thread(target=reload_thread)
+        treload.start()
 
     def attachFileImport(self):
         file_path = filedialog.askopenfilename(title="Import Playlist", filetypes= [("Json files","*.json")])
@@ -451,7 +505,7 @@ class MusicPlayerGUI:
                 json.dump(jdata, jfile, ensure_ascii=False, indent=4)
 
             self.saved_strvar.set(self.saved_title)
-            self.updateLog('Imported Playlist', LOG_DONE_COLOR)
+            self.log.updateLog('Imported Playlist', LOG_DONE_COLOR)
 
     def attachFileExport(self):
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=(("Json files", "*.json"), ("All files", "*.*")))
@@ -465,7 +519,7 @@ class MusicPlayerGUI:
             with open(file_path, 'w', encoding='utf-8') as jfile:
                 json.dump(jdata, jfile, ensure_ascii=False, indent=4)
 
-            self.updateLog('Exported Playlist', LOG_DONE_COLOR)
+            self.log.updateLog('Exported Playlist', LOG_DONE_COLOR)
 
     def updateThumbnail(self, url=None):
         if url is None:
@@ -484,21 +538,6 @@ class MusicPlayerGUI:
 
         tupdate_thumbnail = threading.Thread(target=updateThumbnail_thread)
         tupdate_thumbnail.start()
-
-    def updateLog(self, arg: str, color=None):
-        self.log.config(state=tk.NORMAL)
-        if self.log_count >= LOGLIMIT:
-            self.log.delete("1.0", "end")
-            self.log_count = 0
-
-        self.log.insert("end", f"{arg}\n")
-        self.log_count += 1
-
-        if color:
-            self.log.tag_add(arg, f'{self.log_count}.0', f'{self.log_count}.{len(arg)}')
-            self.log.tag_config(arg, foreground=color)
-
-        self.log.config(state=tk.DISABLED)
 
     def on_closing(self):
         self.stop()
