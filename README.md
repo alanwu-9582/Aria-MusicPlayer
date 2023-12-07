@@ -1,4 +1,4 @@
-PY-MUSIC-PLAYER
+Aria MusicPlayer
 ======
 
 ![license MIT](https://img.shields.io/badge/license-MIT-blue)

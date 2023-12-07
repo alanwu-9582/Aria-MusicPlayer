@@ -463,11 +463,13 @@ class MusicPlayerGUI:
                     }
 
                     self.saved_data[selection] = music_data
+                    self.saved_title[selection] = music_data['title']
+                    self.saved_strvar.set(self.saved_title)
 
                 else:
                     self.log.updateLog(f'Error: {error}', LOG_ERROR_COLOR)
                     continue
-
+            
             jdata = {'saved': self.saved_data}
             with open(f'assets/saved.json', 'w', encoding='utf-8') as jfile:
                 json.dump(jdata, jfile, ensure_ascii=False, indent=4)
