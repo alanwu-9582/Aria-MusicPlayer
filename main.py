@@ -15,7 +15,7 @@ from io import BytesIO
 from Constants import *
 from libs.MarqueeLabel import MarqueeLabel
 from libs.LogTextbox import LogTextbox
-from Player import Player, PlayerEventType
+from Player import Player
 from YTLoader import YTLoader
 
 class MusicPlayerGUI:
@@ -49,7 +49,7 @@ class MusicPlayerGUI:
         self.createObjects()
         self.createFunctionButtons()
         self.applyStyle()
-        self.configureKeyBind()
+        # self.configureKeyBind()
 
     def createFrames(self):
         # Player Frame 上半部分
