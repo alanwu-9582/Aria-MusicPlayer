@@ -49,6 +49,7 @@ class MusicPlayerGUI:
         self.createObjects()
         self.createFunctionButtons()
         self.applyStyle()
+        self.configureKeyBind()
 
     def createFrames(self):
         # Player Frame 上半部分
@@ -238,6 +239,16 @@ class MusicPlayerGUI:
         self.log.config(bg=PLAYER_BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
         self.saved_listbox.config(bg=PLAYER_BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
         self.saved_listbox.config(bg=PLAYER_BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
+
+    def configureKeyBind(self):
+        self.master.bind('<space>', self.test)
+
+    def test(self, event):
+        EVENTDICT = {
+            'space': lambda: self.play()
+        }
+
+        EVENTDICT[event.keysym]()
 
     # 以下都不是 UI
     def playingChecker(self):
