@@ -357,6 +357,22 @@ class MainWindow(QMainWindow):
                 if SHELF in self._built:
                     self.shelf_page.set_hue(None)
 
+    def clear_cache(self) -> None:
+        """Ask, then empty data/cache in the background (library and downloads stay)."""
+        from aria.core import cache, tasks
+        from aria.ui.widgets.dialogs import confirm
+        if not confirm(self, "Clear the cache?",
+                       "Covers, lyrics and stream data are fetched again when needed. "
+                       "Your library, playlists and downloads stay.", "Clear Cache"):
+            return
+
+        def done(freed: int):
+            self.toast("success", f"Cache cleared · {cache.human(freed)} freed")
+            if SETTINGS in self._built:
+                self.settings_page.update_cache_size()
+
+        tasks.run(cache.clear, done, lambda e: self.toast("danger", "Couldn’t clear the cache"))
+
     def _current_playlist_menu(self, anchor) -> None:
         t = self.playback.current
         if not t:
@@ -440,6 +456,7 @@ class MainWindow(QMainWindow):
             Command("Open Library", "library", lambda: self.go(LIBRARY), "Ctrl+3", "saved"),
             Command("Open Settings", "settings", lambda: self.go(SETTINGS), "Ctrl+,", "preferences options"),
             Command("Open Console", "terminal", lambda: self.go(CONSOLE), "Ctrl+5", "log commands"),
+            Command("Clear Cache", "trash", self.clear_cache, "", "delete free space covers lyrics"),
             Command("Open Downloads Folder", "folder",
                     lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))), "", "files"),
             Command("Change Appearance", "moon", self._cycle_appearance, "", "theme dark light"),

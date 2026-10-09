@@ -139,3 +139,21 @@ def test_sessions_record_order_saves_and_split_on_gaps(listening_env):
     pb.current_changed.emit(yt("3", duration=200))  # …so this starts a new session
     assert len(ls.sessions) == 1 and ls.sessions[0].card.endswith("— 2 tracks")
     assert [t.id for t in ls.current.tracks] == ["3"]
+
+
+def test_clear_cache_keeps_everything_else(tmp_path, monkeypatch):
+    from aria.core import cache
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(paths, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(paths, "THUMB_DIR", tmp_path / "cache" / "thumbs")
+    monkeypatch.setattr(paths, "AUDIO_DIR", tmp_path / "audio")
+    paths.ensure_dirs()
+    (paths.THUMB_DIR / "a.img").write_bytes(b"x" * 2048)
+    (paths.CACHE_DIR / "lyrics").mkdir()
+    (paths.CACHE_DIR / "lyrics" / "b.json").write_text("{}")
+    song = paths.AUDIO_DIR / "song.m4a"
+    song.write_bytes(b"music")
+    assert cache.size() >= 2048
+    assert cache.clear() >= 2048
+    assert cache.size() == 0 and paths.THUMB_DIR.exists() and song.exists()
+    assert cache.human(1536) == "1.5 KB"

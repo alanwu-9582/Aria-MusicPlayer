@@ -63,7 +63,7 @@ YouTube 經常改版。若出現「無法播放」，在「主控台」輸入 `u
 - **快速命令（Ctrl+K）**：浮動的命令框，可搜尋歌曲（先找自己的音樂，再找 YouTube）與執行功能，例如 Add to Playlist、Download Current Track、Switch Source、Open Shelf、Listen for 25 Minutes；↑↓ 選擇、Enter 執行／播放、Shift+Enter 加入佇列
 - **移除時可一併刪檔**：從收藏或播放清單移除已下載的歌時，可勾選「Also delete downloaded files」；正在播放的那個檔案會等這首歌結束後再刪除
 - **主控台**：即時紀錄與指令列，輸入 `help` 查看所有指令
-- **設定**：自然過渡、柔和恢復、自動推薦、下載後改播本機、音量平衡、外觀、Smart Artwork、減少動態效果、關閉時縮到系統匣
+- **設定**：自然過渡、柔和恢復、自動推薦、下載後改播本機、音量平衡、外觀、Smart Artwork、減少動態效果、關閉時縮到系統匣、清除快取（封面、歌詞與串流資料；不會動到收藏與下載的歌，也可用 Ctrl+K 或主控台 `cache clear`）
 
 ### 歌詞
 

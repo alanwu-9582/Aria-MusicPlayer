@@ -374,7 +374,8 @@ class QuickActions(QWidget):
                 items.append(Item("header", "Your Music"))
                 items += [self._song_item(t) for t in mine]
             mine_keys = {t.key for t in mine}
-            online = [t for t in self._online if t.key not in mine_keys] if self._online_for else []
+            # Only results for what's typed now (not the previous query's).
+            online = [t for t in self._online if t.key not in mine_keys] if self._online_for == q else []
             if online:
                 items.append(Item("header", "YouTube"))
                 items += [self._song_item(t) for t in online]

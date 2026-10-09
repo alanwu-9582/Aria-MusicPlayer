@@ -144,6 +144,11 @@ class SettingsPage(Page):
         folder = Button("Data Folder", icon="folder")
         folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.DATA_DIR))))
         data.pair(downloads, folder)
+        self.cache_btn = Button("Clear Cache", icon="trash",
+                                tooltip="Covers, lyrics and stream data; your music stays")
+        self.cache_btn.clicked.connect(window.clear_cache)
+        self.cache_size = label("", "Secondary")
+        data.pair(self.cache_btn, self.cache_size)
         col.addWidget(data)
         col.addStretch(1)
         body.setMaximumWidth(620)
@@ -171,7 +176,14 @@ class SettingsPage(Page):
         self.apps_title.setToolTip("" if i == 1 else "Call apps (Discord, Teams, Zoom…) are excluded unless unticked")
         self.balance_apps.rebuild()
 
+    def update_cache_size(self) -> None:
+        from aria.core import cache, tasks
+        self.cache_size.setText("…")
+        tasks.run(cache.size, lambda n: self.cache_size.setText(f"Cache: {cache.human(n)}"),
+                  lambda _e: self.cache_size.setText(""))
+
     def on_shown(self) -> None:
+        self.update_cache_size()
         if self.balance_apps is not None:
             self.balance_apps.rebuild(rescan=True)
 

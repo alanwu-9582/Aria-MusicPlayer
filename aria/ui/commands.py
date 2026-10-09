@@ -29,6 +29,7 @@ repeat [off|all|one] repeat mode
 rec                  refresh and list recommendations
 theme [system|light|dark]
 data                 open the data folder
+cache [clear]        show the cache size, or clear it
 update               update yt-dlp (when YouTube stops playing)
 version · cls        version / clear the console"""
 
@@ -144,6 +145,14 @@ class Commands:
 
     def cmd_data(self, _):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.DATA_DIR)))
+
+    def cmd_cache(self, arg):
+        from aria.core import cache
+        if arg == "clear":
+            tasks.run(cache.clear, lambda n: log.info("Cache cleared · %s freed", cache.human(n)),
+                      lambda e: log.error("Couldn’t clear the cache: %s", e))
+            return "Clearing…"
+        return f"Cache: {cache.human(cache.size())} — type “cache clear” to clear it"
 
     def cmd_update(self, _):
         def work():
