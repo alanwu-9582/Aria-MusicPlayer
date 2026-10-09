@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import collections
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from itertools import zip_longest
 
 from aria.core import textnorm
@@ -45,21 +46,24 @@ class Recommender:
                     or (exact[0] if exact else results[0] if results else None)
                 vid = pick.id if pick else None
         except Exception as exc:
-            log.warning("找不到推薦種子 %s: %s", track.title, exc)
+            log.warning("No recommendation seed for %s: %s", track.title, exc)
         self._seed_cache[track.key] = vid
         return vid
 
     def recommend(self, seeds: list[Track], exclude: list[Track], count: int = 10) -> list[Track]:
         """Blocking. ``seeds``: most recent first. ``exclude``: everything already heard or queued."""
-        pools = []
-        for seed in seeds[:3]:
+        def radio(seed: Track) -> list[Track]:
             vid = self.youtube_seed(seed)
             if not vid:
-                continue
+                return []
             try:
-                pools.append(self.youtube.mix(vid, limit=40))
+                return self.youtube.mix(vid, limit=40)
             except Exception as exc:
-                log.warning("取得推薦失敗: %s", exc)
+                log.warning("Couldn’t fetch recommendations: %s", exc)
+                return []
+
+        with ThreadPoolExecutor(4) as ex:
+            pools = [p for p in ex.map(radio, seeds[:5]) if p]
         return pick_related(_weave(pools), seeds + exclude, count)
 
 

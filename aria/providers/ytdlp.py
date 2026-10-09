@@ -7,8 +7,6 @@ import re
 import time
 from typing import Any, Callable
 
-import yt_dlp
-
 from aria import paths
 from aria.core.models import Stream
 
@@ -43,10 +41,17 @@ BASE = {
     "js_runtimes": {"deno": {}, "node": {}},
 }
 
+# Streaming prefers WebM/Opus: VLC seeks it in ~0.5 s anywhere, while YouTube's
+# fragmented M4A can stall for seconds near the end. Downloads keep M4A for
+# compatibility with other players.
+STREAM_FORMAT = "bestaudio[ext=webm]/bestaudio/best"
 AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
 
 
-def _ydl(**opts) -> yt_dlp.YoutubeDL:
+def _ydl(**opts):
+    # Imported on first use (in a background task): keeps ~0.2 s off app start-up.
+    import yt_dlp
+
     return yt_dlp.YoutubeDL({**BASE, **opts})
 
 
@@ -63,7 +68,18 @@ def flat(target: str, limit: int | None = None, playlist: bool = True) -> list[d
     return [e for e in entries if e]
 
 
-def extract(url: str, fmt: str = AUDIO_FORMAT) -> dict:
+def flat_info(target: str, limit: int | None = None) -> dict:
+    """Playlist metadata plus its (unresolved) entries."""
+    opts: dict[str, Any] = {"extract_flat": "in_playlist", "noplaylist": False}
+    if limit:
+        opts["playlistend"] = limit
+    with _ydl(**opts) as y:
+        info = y.extract_info(target, download=False) or {}
+    info["entries"] = [e for e in info.get("entries") or [] if e]
+    return info
+
+
+def extract(url: str, fmt: str = STREAM_FORMAT) -> dict:
     with _ydl(format=fmt) as y:
         return y.extract_info(url, download=False) or {}
 
@@ -74,7 +90,7 @@ def stream_of(info: dict) -> Stream:
         fmts = [f for f in info.get("requested_formats") or [] if f.get("acodec") != "none"]
         url = fmts[0]["url"] if fmts else ""
     if not url:
-        raise RuntimeError("找不到可播放的音訊")
+        raise RuntimeError("No playable audio")
     return Stream(url=url, headers=dict(info.get("http_headers") or {}), expires_at=expiry_of(url))
 
 

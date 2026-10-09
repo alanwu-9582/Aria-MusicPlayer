@@ -23,7 +23,7 @@ def read_json(path: Path, default: Any) -> Any:
     except FileNotFoundError:
         return default
     except (OSError, ValueError) as exc:
-        log.error("讀取失敗 %s: %s", path.name, exc)
+        log.error("Couldn’t read %s: %s", path.name, exc)
         return default
 
 
@@ -54,7 +54,7 @@ class DebouncedSaver:
         try:
             write_json(self.path, self.snapshot())
         except OSError as exc:
-            log.error("儲存失敗 %s: %s", self.path.name, exc)
+            log.error("Couldn’t save %s: %s", self.path.name, exc)
 
 
 class Settings:
@@ -68,6 +68,14 @@ class Settings:
         "search_source": "youtube",
         "panel_tab": 0,
         "geometry": "",
+        "crossfade": True,          # blend into the next song
+        "crossfade_secs": 6,
+        "soft_resume": True,        # long pause → fade back in
+        "auto_local": True,         # switch to the file when a download of the playing song finishes
+        "smart_artwork": True,      # tint the now-playing page from the cover
+        "close_to_tray": True,
+        "lyrics_enhanced": False,   # also look for lyrics in descriptions / comments
+        "mini_pos": "",
     }
 
     def __init__(self):
@@ -113,5 +121,5 @@ def migrate_legacy() -> tuple[list[Track], list[Track]] | None:
         return None
     lib = [t for t in map(legacy_track, saved) if t]
     q = [t for t in map(legacy_track, queue) if t]
-    log.info("已從 v1 匯入 %d 首收藏、%d 首佇列", len(lib), len(q))
+    log.info("Imported from v1: %d library songs, %d queued", len(lib), len(q))
     return lib, q

@@ -82,7 +82,7 @@ class Library(QObject):
         self.add([track])
         return True
 
-    def remove(self, keys: list[str], delete_files: bool = True) -> None:
+    def remove(self, keys: list[str], delete_files: bool = False) -> None:
         keyset = set(keys)
         for t in [t for t in self.tracks if t.key in keyset]:
             self.tracks.remove(t)
@@ -117,7 +117,7 @@ class Library(QObject):
     def import_file(self, path: str) -> int:
         data = read_json(Path(path), None)
         if data is None:
-            raise ValueError("無法讀取歌單")
+            raise ValueError("Couldn’t read the playlist file")
         if "tracks" in data:
             tracks = [Track.from_dict(d) for d in data["tracks"]]
         else:  # v1 export: {"saved": [{title, author, watch_url, …}]}
@@ -197,13 +197,13 @@ class Downloader(QObject):
 
         def done(path: str):
             self._ok += 1
-            log.info("已下載 %s", track.title)
+            log.info("Downloaded %s", track.title)
             self.finished.emit(track.key, path)
             self._next()
 
         def failed(exc: Exception):
             self._fail += 1
-            log.error("下載失敗 %s: %s", track.title, exc)
+            log.error("Download failed %s: %s", track.title, exc)
             self._next()
 
         tasks.run(lambda: providers.download(track, report), done, failed)

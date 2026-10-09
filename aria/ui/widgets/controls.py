@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QToolButton, QWidget
+from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtGui import QFontMetrics, QPainter
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+                               QToolButton, QWidget)
 
 from aria.ui import icons
 from aria.ui.theme import ROW, font, theme
@@ -107,3 +109,84 @@ def hbox(*widgets, spacing: int = 8, margins=(0, 0, 0, 0)) -> QHBoxLayout:
 def expanding(w: QWidget) -> QWidget:
     w.setSizePolicy(QSizePolicy.Policy.Expanding, w.sizePolicy().verticalPolicy())
     return w
+
+
+class Toggle(QAbstractButton):
+    """Text toggle (§4.5): outlined when off; an inset accent block with on_accent text when on."""
+
+    def __init__(self, text: str, tooltip: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setText(text)
+        self.setCheckable(True)
+        self.setFixedHeight(ROW)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAccessibleName(text)
+        if tooltip:
+            self.setToolTip(tooltip)
+        self._hover = False
+        theme.changed.connect(self.update)
+
+    def sizeHint(self):
+        return QSize(QFontMetrics(font("callout", 600)).horizontalAdvance(self.text()) + 32, ROW)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        border = theme.color("accent") if self.hasFocus() else theme.color("tertiary" if self._hover else "separator_hex")
+        p.setPen(border)
+        p.setBrush(theme.color("content"))
+        p.drawRoundedRect(r, 6, 6)
+        if self.isChecked():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.color("accent"))
+            p.drawRoundedRect(r.adjusted(2.5, 2.5, -2.5, -2.5), 4, 4)
+        on = self.isChecked()
+        p.setFont(font("callout", 600 if on else 400))
+        p.setPen(theme.color("on_accent" if on else ("label" if self._hover else "secondary")))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
+        p.end()
+
+
+class CheckBox(QAbstractButton):
+    """16 px box (radius 4) + callout text; checked = accent fill with a check mark."""
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setText(text)
+        self.setCheckable(True)
+        self.setFixedHeight(ROW)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(text)
+        theme.changed.connect(self.update)
+
+    def sizeHint(self) -> QSize:
+        return QSize(QFontMetrics(font("callout")).horizontalAdvance(self.text()) + 26, ROW)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box = QRectF(0.5, (self.height() - 16) / 2 + 0.5, 15, 15)
+        if self.isChecked():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.color("accent"))
+            p.drawRoundedRect(box, 4, 4)
+            p.drawPixmap(box.adjusted(2, 2, -2, -2).toRect(), icons.pixmap("check", theme.color("on_accent"), 12))
+        else:
+            p.setPen(theme.color("accent") if self.hasFocus() else theme.color("tertiary"))
+            p.setBrush(theme.color("control"))
+            p.drawRoundedRect(box, 4, 4)
+        p.setFont(font("callout"))
+        p.setPen(theme.color("label"))
+        p.drawText(QRectF(24, 0, self.width() - 24, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
+        p.end()

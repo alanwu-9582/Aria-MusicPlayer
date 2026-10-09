@@ -24,7 +24,7 @@ SOURCE_NAMES = ["YouTube", "Bilibili", "SoundCloud"]
 
 class SearchPage(Page):
     def __init__(self, library, actions, settings):
-        super().__init__("搜尋")
+        super().__init__("Search")
         self.library = library
         self.actions = actions
         self.settings = settings
@@ -33,8 +33,7 @@ class SearchPage(Page):
 
         bar = self.toolbar()
         self.field = QLineEdit()
-        self.field.setPlaceholderText("歌曲、歌手或連結")
-        self.field.setToolTip("輸入關鍵字搜尋，或貼上 YouTube / Bilibili / Spotify / SoundCloud 的歌曲、歌單連結（Ctrl+F）")
+        self.field.setPlaceholderText("Songs, artists or a link")
         self.field.setClearButtonEnabled(True)
         self._search_icon = QAction(self.field)
         self.field.addAction(self._search_icon, QLineEdit.ActionPosition.LeadingPosition)
@@ -42,17 +41,16 @@ class SearchPage(Page):
         self.field.textChanged.connect(lambda _t: self.field.setProperty("error", False) or self._repolish())
         bar.addWidget(self.field, 1)
 
-        self.source = Segmented(SOURCE_NAMES, compact=True,
-                                tooltips=[f"在 {n} 搜尋" for n in SOURCE_NAMES])
+        self.source = Segmented(SOURCE_NAMES, compact=True)
         current = settings["search_source"]
         self.source.set_index(SOURCES.index(current) if current in SOURCES else 0)
         self.source.changed.connect(self._source_changed)
         bar.addWidget(self.source)
 
         self.status = label("", "Caption")
-        self.add_all = Button("全部加入佇列", "borderless", icon="queue-add")
+        self.add_all = Button("Add All to Queue", "borderless", icon="queue-add")
         self.add_all.clicked.connect(lambda: self.actions.enqueue(self.results.tracks()))
-        self.save_all = Button("全部收藏", "borderless", icon="heart")
+        self.save_all = Button("Save All", "borderless", icon="heart")
         self.save_all.clicked.connect(lambda: self.actions.save(self.results.tracks()))
         row = self.toolbar()
         row.addWidget(self.status)
@@ -60,11 +58,11 @@ class SearchPage(Page):
         row.addWidget(self.add_all)
         row.addWidget(self.save_all)
 
-        self.results = TrackListView("search", "搜尋音樂", "輸入關鍵字，或貼上歌曲、歌單連結。")
+        self.results = TrackListView("search", "Search for music", "Type a name, or paste a song or playlist link.")
         saved = lambda t: t.key in self.library  # noqa: E731
         self.results.actions = [
-            RowAction("queue-add", "加入佇列", lambda r: actions.enqueue([self.results.tracks()[r]])),
-            RowAction("heart", "收藏", lambda r: actions.toggle_saved(self.results.tracks()[r]), saved),
+            RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.results.tracks()[r]])),
+            RowAction("heart", "Save", lambda r: actions.toggle_saved(self.results.tracks()[r]), saved),
         ]
         self.results.activated_row.connect(lambda r: actions.play([self.results.tracks()[r]]))
         self.results.context_requested.connect(
@@ -105,10 +103,10 @@ class SearchPage(Page):
         ticket = self._latest.next()
         is_link = self._from_link = providers.is_link(query)
         source = SOURCES[self.source.index()]
-        self.status.setText("讀取連結中…" if is_link else "搜尋中…")
+        self.status.setText("Reading link…" if is_link else "Searching…")
         self.add_all.hide()
         self.save_all.hide()
-        log.info("%s: %s", "解析連結" if is_link else f"搜尋 {SOURCE_NAMES[self.source.index()]}", query)
+        log.info("%s: %s", "Link" if is_link else f"Search {SOURCE_NAMES[self.source.index()]}", query)
 
         def work():
             return providers.parse(query) if is_link else providers.search(source, query, 25)
@@ -118,23 +116,25 @@ class SearchPage(Page):
                 return
             self.results.set_tracks(tracks)
             self.results.scrollToTop()
-            log.info("找到 %d 首", len(tracks))
+            if tracks and TrackListView.warm_hook:
+                TrackListView.warm_hook(tracks[0])      # the likeliest pick
+            log.info("Found %d", len(tracks))
             self._update_bar()
 
         def failed(exc):
             if not self._latest.is_current(ticket):
                 return
-            log.error("搜尋失敗: %s", exc)
+            log.error("Search failed: %s", exc)
             self.field.setProperty("error", True)
             self._repolish()
             self.results.set_tracks([])
-            self.status.setText("找不到結果" if isinstance(exc, ValueError) else "連線失敗")
+            self.status.setText("Nothing found" if isinstance(exc, ValueError) else "Couldn’t connect")
 
         tasks.run(work, done, failed)
 
     def _update_bar(self) -> None:
         n = len(self.results.tracks())
-        self.status.setText(f"{n:,} 首" if n else "")
+        self.status.setText(f"{n:,} result{'s' if n != 1 else ''}" if n else "")
         multi = n > 1 and self._from_link        # a playlist / album link
         self.add_all.setVisible(multi)
         self.save_all.setVisible(multi)

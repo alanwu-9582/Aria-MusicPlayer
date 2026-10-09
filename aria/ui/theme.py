@@ -1,4 +1,4 @@
-"""Design tokens (介面設計規範 §1–3), fonts, and the global stylesheet.
+"""Design tokens (the design spec, §1–3), fonts, and the global stylesheet.
 
 Widgets never hard-code colours: they ask ``theme.color("token")`` and repaint
 on ``theme.changed``. Light/dark follows the OS unless the user picks one.
@@ -7,6 +7,7 @@ on ``theme.changed``. Light/dark follows the OS unless the user picks one.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPalette
@@ -84,7 +85,9 @@ def parse_color(value: str) -> QColor:
     return QColor(value)
 
 
+@lru_cache(maxsize=64)
 def font(style: str = "body", weight: int | None = None, mono: bool = False) -> QFont:
+    """Shared font for a type-scale role. Treat it as read-only (copy with QFont(f) to change it)."""
     px, w = TYPE[style]
     f = QFont()
     f.setFamilies(MONO_FAMILIES if mono else UI_FAMILIES)
@@ -126,6 +129,11 @@ class Theme(QObject):
         self._app = app
         self.appearance = appearance
         app.setFont(font("body"))
+        # QSS font-size isn't always honoured by native tooltips; set it directly (caption 12 / 500).
+        from PySide6.QtWidgets import QToolTip
+        tip = QFont(font("caption", 400))
+        tip.setPixelSize(11)
+        QToolTip.setFont(tip)
         hints = QGuiApplication.styleHints()
         if hasattr(hints, "colorSchemeChanged"):
             hints.colorSchemeChanged.connect(lambda _s: self._refresh())
@@ -179,7 +187,7 @@ QWidget {{ color: {t['label']}; }}
 QMainWindow, QDialog, #Page {{ background: {t['window']}; }}
 QToolTip {{
     background: {t['elevated']}; color: {t['label']}; border: 1px solid {t['separator_hex']};
-    border-radius: 6px; padding: 4px 8px; font-size: 12px; font-weight: 500;
+    border-radius: 5px; padding: 1px 5px; font-size: 11px; font-weight: 400;
 }}
 
 QPushButton {{
@@ -251,6 +259,7 @@ QSplitter::handle {{ background: transparent; }}
 #Sidebar {{ background: {t['sidebar']}; border-right: 1px solid {t['separator']}; }}
 #StatusBar {{ border-top: 1px solid {t['separator']}; }}
 #PlayerBar {{ background: {t['content']}; border-top: 1px solid {t['separator']}; }}
+#Group {{ background: {t['content']}; border: 1px solid {t['separator_hex']}; border-radius: 10px; }}
 #Card {{ background: {t['content']}; border: 1px solid {t['separator_hex']}; border-radius: 12px; }}
 #Secondary {{ color: {t['secondary']}; }}
 #Caption {{ color: {t['secondary']}; font-size: 12px; }}

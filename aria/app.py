@@ -31,34 +31,48 @@ def main() -> int:
     app.setApplicationName("Aria")
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
+    app.setQuitOnLastWindowClosed(False)      # closing can mean "keep playing in the tray"
     icon = paths.ASSETS_DIR / "icon.ico"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
 
-    # Imported after QApplication exists (widgets/pixmaps need it).
-    from aria.core import storage, tasks
-    from aria.core.library import Downloader, Library
-    from aria.core.playback import Playback
-    from aria.ui.main_window import MainWindow
+    # Light imports first, so the launch card appears before the heavy ones (yt-dlp, VLC).
+    from aria.core import storage
+    from aria.ui.splash import Splash
     from aria.ui.theme import theme
 
     settings = storage.Settings()
     theme.attach(app, settings["appearance"])
+    splash = Splash()
+    splash.start()
 
+    splash.step("Loading the player…")
+    from aria.core import tasks
+    from aria.core.library import Downloader, Library
+    from aria.core.lists import Playlists, Shelf
+    from aria.core.playback import Playback
+
+    splash.step("Reading your library…")
     legacy = storage.migrate_legacy()
     library = Library(legacy[0] if legacy else None)
     playback = Playback(settings, legacy[1] if legacy else None)
     downloader = Downloader()
+    playlists = Playlists()
+    shelf = Shelf()
 
-    window = MainWindow(settings, playback, library, downloader, bus)
-    window.show()
-    log.info("Aria %s 已啟動 · 收藏 %d 首 · 佇列 %d 首", __version__, len(library), len(playback.queue))
+    splash.step("Preparing the interface…")
+    from aria.ui.main_window import MainWindow
+    window = MainWindow(settings, playback, library, downloader, playlists, shelf, bus)
+    splash.finish(window)
+    log.info("Aria %s started · %d in library · %d in queue", __version__, len(library), len(playback.queue))
 
     code = app.exec()
 
     playback.shutdown()
     settings.flush()
     library.flush()
+    playlists.flush()
+    shelf.flush()
     tasks.shutdown()
     logging.shutdown()
     # yt-dlp / requests worker threads may still be blocked on the network; don't wait for them.

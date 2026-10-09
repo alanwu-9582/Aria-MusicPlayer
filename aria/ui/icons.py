@@ -78,6 +78,25 @@ PATHS = {
     "external": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/>'
                 '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+    "arrow-left": '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    "disc": '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/>'
+            '<path d="M6 12c0-1.7.7-3.2 1.8-4.2"/><path d="M18 12c0 1.7-.7 3.2-1.8 4.2"/>',
+    "orbit": '<circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/>'
+             '<path d="M10.4 21.9a10 10 0 0 0 9.941-15.416"/><path d="M13.5 2.1a10 10 0 0 0-9.841 15.416"/>',
+    "settings": '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/>'
+                '<line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/>'
+                '<line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/>'
+                '<line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/>'
+                '<line x1="16" x2="16" y1="18" y2="22"/>',
+    "mini": '<path d="M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4"/>'
+            '<rect width="10" height="7" x="12" y="13" rx="2"/>',
+    "expand": '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>'
+              '<line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/>',
+    "pencil": '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352'
+              'a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>',
+    "list": '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/>'
+            '<path d="M8 18h13"/><path d="M8 6h13"/>',
+    "user": '<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>',
     "chevron-down": '<path d="m6 9 6 6 6-6"/>',
 }
 
@@ -123,3 +142,20 @@ def icon(name: str, normal: QColor, size: int = 16, on: QColor | None = None,
 
 def size(px: int) -> QSize:
     return QSize(px, px)
+
+
+def app_logo(size: int, dpr: float = 1.0) -> QPixmap:
+    """The app mark rendered straight from its SVG, sharp at any scale.
+    Below ~40 device pixels the simplified small-size drawing is used."""
+    from aria import paths
+
+    px = round(size * dpr)
+    svg = paths.ASSETS_DIR / ("icon-small.svg" if px <= 40 else "icon.svg")
+    pm = QPixmap(px, px)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    QSvgRenderer(str(svg)).render(p, QRectF(0, 0, px, px))
+    p.end()
+    pm.setDevicePixelRatio(dpr)
+    return pm

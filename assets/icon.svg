@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Aria — main mark: a silk-ribbon "A"; the crossbar is a note head. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fdfcf9"/>
+      <stop offset="1" stop-color="#e8e4da"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.2" r="0.85">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="leg" x1="0.2" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#6e9787"/>
+      <stop offset="0.5" stop-color="#507768"/>
+      <stop offset="1" stop-color="#3b5d50"/>
+    </linearGradient>
+    <linearGradient id="silk" x1="0" y1="1" x2="0.7" y2="0">
+      <stop offset="0" stop-color="#c9dbd2" stop-opacity="0.05"/>
+      <stop offset="0.45" stop-color="#9fc2b3" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6c9585" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="silk2" x1="0" y1="1" x2="0.75" y2="0.05">
+      <stop offset="0" stop-color="#e6efea" stop-opacity="0"/>
+      <stop offset="1" stop-color="#b3cfc3" stop-opacity="0.75"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="note" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#86ab9b"/>
+      <stop offset="1" stop-color="#4a6e60"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#glow)"/>
+  <rect x="33.5" y="33.5" width="957" height="957" rx="214.5" fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="3"/>
+
+  <!-- shadow -->
+  <g opacity="0.18" filter="url(#soft)" transform="translate(12 24)">
+    <path d="M548 214 C590 206 622 236 646 300 C690 420 742 620 804 796 C812 818 790 828 770 822
+             C748 816 738 800 732 784 C682 640 628 470 590 352 C576 308 560 270 530 252 C534 232 540 218 548 214 Z" fill="#2c463c"/>
+    <ellipse cx="516" cy="656" rx="84" ry="60" transform="rotate(-24 516 656)" fill="#2c463c"/>
+  </g>
+
+  <!-- silk ribbon: the left leg, flowing out past the letter -->
+  <path d="M112 742 C230 650 380 470 486 300 C508 262 528 230 548 214
+           C556 258 540 306 512 356 C430 510 340 690 296 872 C236 846 168 800 112 742 Z" fill="url(#silk)"/>
+  <path d="M170 830 C300 700 420 520 520 330 C534 300 546 262 552 236
+           C566 290 560 338 540 384 C470 548 390 712 352 880 C290 872 222 856 170 830 Z" fill="url(#silk2)"/>
+
+  <!-- right leg: calligraphic, thin at the apex, full in the middle, a soft foot -->
+  <path d="M548 214 C590 206 622 236 646 300 C690 420 742 620 804 796 C812 818 790 828 770 822
+           C748 816 738 800 732 784 C682 640 628 470 590 352 C576 308 560 270 530 252 C534 232 540 218 548 214 Z"
+        fill="url(#leg)"/>
+  <path d="M556 226 C588 224 610 252 626 296 C640 336 652 372 662 404 C640 360 618 320 596 290 C584 270 570 248 556 226 Z"
+        fill="url(#sheen)"/>
+
+  <!-- the note: head in the crossbar's place, its stem melting into the leg -->
+  <path d="M590 628 C600 566 606 506 616 452" stroke="#507768" stroke-width="17" stroke-linecap="round" fill="none"/>
+  <ellipse cx="516" cy="656" rx="84" ry="60" transform="rotate(-24 516 656)" fill="url(#note)"/>
+  <ellipse cx="492" cy="634" rx="34" ry="15" transform="rotate(-24 492 634)" fill="#ffffff" opacity="0.3"/>
+</svg>

@@ -127,7 +127,7 @@ class Bilibili(Provider):
         else:
             av = _AV.search(url)
             if not av:
-                raise ValueError("無法辨識的 Bilibili 連結")
+                raise ValueError("Unrecognised Bilibili link")
             view = self.api.get("/x/web-interface/wbi/view", {"aid": av.group(1)})
         bvid = view["bvid"]
         pages = view.get("pages") or [{}]
@@ -146,11 +146,25 @@ class Bilibili(Provider):
                       duration=float(p.get("duration") or 0))
                 for i, p in enumerate(pages, 1)]
 
+    def description(self, track: Track) -> str:
+        bvid, _page = _split_id(track.id)
+        return self._view(bvid).get("desc") or ""
+
+    def album(self, url: str) -> dict:
+        tracks = self.parse(url.split("?")[0])
+        first = tracks[0]
+        bvid = first.id.split("?")[0]
+        view = self._view(bvid)
+        return {"title": _clean(view.get("title", "")), "artist": first.artist, "cover": first.thumbnail,
+                "url": f"https://www.bilibili.com/video/{bvid}", "source": BILIBILI,
+                "year": time.strftime("%Y", time.localtime(view.get("pubdate") or 0)) if view.get("pubdate") else "",
+                "tracks": tracks, "kind": "playlist"}
+
     def stream(self, track: Track) -> Stream:
         bvid, page = _split_id(track.id)
         pages = self._view(bvid).get("pages") or []
         if not pages:
-            raise RuntimeError("找不到分 P")
+            raise RuntimeError("Part not found")
         cid = pages[min(page, len(pages)) - 1]["cid"]
         data = self.api.get("/x/player/wbi/playurl", {"bvid": bvid, "cid": cid, "fnval": 16, "fnver": 0, "fourk": 0})
         audios = (data.get("dash") or {}).get("audio") or []
@@ -159,7 +173,7 @@ class Bilibili(Provider):
         elif data.get("durl"):
             url = data["durl"][0]["url"]
         else:
-            raise RuntimeError("找不到可播放的音訊")
+            raise RuntimeError("No playable audio")
         return Stream(url=url, headers=self.api.headers, expires_at=ytdlp.expiry_of(url, 1800))
 
     def download(self, track: Track, progress=None) -> str:

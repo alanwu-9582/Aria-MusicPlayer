@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate, QToolTip
 
@@ -94,6 +94,20 @@ class TrackDelegate(QStyledItemDelegate):
             p.setBrush(theme.color("fill"))
             p.drawRoundedRect(QRectF(r), 7, 7)
 
+        if self.view.numbered:
+            # album track number instead of a thumbnail
+            tr = QRectF(r.left() + 8, r.top(), 28, r.height())
+            if playing:
+                p.drawPixmap(QRectF(tr.center().x() - 8, tr.center().y() - 8, 16, 16).toRect(),
+                             icons.pixmap("volume", theme.color("accent"), 16))
+            else:
+                p.setFont(font("callout", mono=True))
+                p.setPen(theme.color("secondary"))
+                p.drawText(tr, Qt.AlignmentFlag.AlignCenter, str(index.row() + 1))
+            self._paint_right_and_text(p, r, tr, t, index, selected, hovered, playing)
+            p.restore()
+            return
+
         # thumbnail
         tr = QRectF(r.left() + 8, r.top() + (r.height() - THUMB_H) / 2, THUMB_W, THUMB_H)
         clip = QPainterPath()
@@ -119,6 +133,10 @@ class TrackDelegate(QStyledItemDelegate):
             p.drawPixmap(QRectF(tr.center().x() - 8, tr.center().y() - 8, 16, 16).toRect(),
                          icons.pixmap("volume", "#ffffff", 16))
 
+        self._paint_right_and_text(p, r, tr, t, index, selected, hovered, playing)
+        p.restore()
+
+    def _paint_right_and_text(self, p, r, tr, t, index, selected, hovered, playing) -> None:
         # right side: hover actions, otherwise duration + badges
         show_actions = (hovered or selected) and self.view.actions
         right_edge = r.right() - 12
@@ -159,7 +177,6 @@ class TrackDelegate(QStyledItemDelegate):
         sub = " · ".join(s for s in (t.artist, t.source_label) if s)
         p.drawText(QRect(x, r.top() + 27, w, 18), Qt.AlignmentFlag.AlignVCenter,
                    QFontMetrics(p.font()).elidedText(sub, Qt.TextElideMode.ElideRight, w))
-        p.restore()
 
     def helpEvent(self, event, view, option, index) -> bool:
         if event.type() == QEvent.Type.ToolTip and index.isValid():
@@ -167,13 +184,22 @@ class TrackDelegate(QStyledItemDelegate):
                 if rect.contains(event.pos()):
                     QToolTip.showText(event.globalPos(), act.tooltip, view)
                     return True
+            # Only when the title doesn't fit in the row.
             t: Track = index.data(TrackRole)
-            QToolTip.showText(event.globalPos(), f"{t.title}\n{t.artist}" if t.artist else t.title, view)
+            room = option.rect.width() - THUMB_W - 140
+            if QFontMetrics(font("body")).horizontalAdvance(t.title) > room:
+                QToolTip.showText(event.globalPos(), t.title, view)
+            else:
+                QToolTip.hideText()
             return True
         return super().helpEvent(event, view, option, index)
 
 
 class TrackListView(QListView):
+    # Set by the app: called with the track the user is resting on, so its stream
+    # is resolved before they press play.
+    warm_hook: Callable[[Track], None] | None = None
+
     activated_row = Signal(int)             # double-click / Enter
     delete_pressed = Signal(list)           # rows
     moved = Signal(int, int)                # drag reorder: from, to
@@ -190,6 +216,7 @@ class TrackListView(QListView):
         self.hover_action: tuple[int, RowAction] | None = None
         self.empty = (empty_icon, empty_title, empty_text)
         self.reorderable = reorderable
+        self.numbered = False
         self._press: QPoint | None = None
         self._drag_row = -1
         self._drop_row = -1
@@ -204,6 +231,11 @@ class TrackListView(QListView):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context)
         self.doubleClicked.connect(lambda ix: self.activated_row.emit(ix.row()))
+        self._warm = QTimer(self)
+        self._warm.setSingleShot(True)
+        self._warm.setInterval(350)
+        self._warm.timeout.connect(self._warm_current)
+        self.selectionModel().currentChanged.connect(lambda *_: self._warm.start())
         theme.changed.connect(self.viewport().update)
         thumbs_mod.instance().ready.connect(lambda _k: self.viewport().update())
 
@@ -221,6 +253,11 @@ class TrackListView(QListView):
 
     def selected_tracks(self) -> list[Track]:
         return [self.model_.tracks[i] for i in self.selected_rows()]
+
+    def _warm_current(self) -> None:
+        ix = self.currentIndex()
+        if ix.isValid() and TrackListView.warm_hook:
+            TrackListView.warm_hook(self.model_.tracks[ix.row()])
 
     def set_playing(self, key: str | None) -> None:
         self.model_.playing_key = key

@@ -5,16 +5,17 @@ from __future__ import annotations
 import logging
 import os
 
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QLineEdit
 
+from aria import paths
 from aria.core.library import AUDIO_EXTS, local_track
 from aria.core.models import LOCAL
 from aria.ui import icons
 from aria.ui.pages.base import Page
 from aria.ui.theme import theme
 from aria.ui.widgets.controls import Button, label, vline
-from aria.ui.widgets.dialogs import confirm
 from aria.ui.widgets.tracklist import RowAction, TrackListView
 
 log = logging.getLogger(__name__)
@@ -22,16 +23,18 @@ log = logging.getLogger(__name__)
 
 class LibraryPage(Page):
     def __init__(self, library, downloader, actions, toast):
-        super().__init__("收藏")
+        super().__init__("Library")
         self.library = library
         self.downloader = downloader
         self.actions = actions
         self.toast = toast
 
-        self.open_btn = Button("加入檔案…", "borderless", icon="folder", tooltip="加入電腦裡的音樂檔（Ctrl+O）")
-        self.import_btn = Button("匯入…", "borderless", icon="import", tooltip="匯入歌單 JSON（支援 v1 格式）")
-        self.export_btn = Button("匯出…", "borderless", icon="export", tooltip="把收藏匯出成歌單 JSON")
-        for b in (self.open_btn, self.import_btn, self.export_btn):
+        self.open_btn = Button("Add Files…", "borderless", icon="plus")
+        self.folder_btn = Button("Downloads", "borderless", icon="folder")
+        self.folder_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))))
+        self.import_btn = Button("Import…", "borderless", icon="import")
+        self.export_btn = Button("Export…", "borderless", icon="export")
+        for b in (self.folder_btn, self.open_btn, self.import_btn, self.export_btn):
             self.header.addWidget(b)
         self.open_btn.clicked.connect(self.add_files)
         self.import_btn.clicked.connect(self.import_playlist)
@@ -39,26 +42,26 @@ class LibraryPage(Page):
 
         bar = self.toolbar()
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("篩選")
+        self.filter.setPlaceholderText("Filter")
         self.filter.setClearButtonEnabled(True)
         self.filter.setFixedWidth(220)
         self._filter_icon = QAction(self.filter)
         self.filter.addAction(self._filter_icon, QLineEdit.ActionPosition.LeadingPosition)
         self.filter.textChanged.connect(self._refresh)
-        self.play_btn = Button("播放", "primary", icon="play", tooltip="播放選取的歌；未選取時播放全部")
-        self.queue_btn = Button("加入佇列", icon="queue-add", tooltip="未選取時加入全部")
-        self.download_btn = Button("下載", icon="download", tooltip="下載後可離線播放")
-        self.remove_btn = Button("移除", "danger", icon="trash", tooltip="從收藏移除（Delete）")
+        self.play_btn = Button("Play", "primary", icon="play")
+        self.queue_btn = Button("Add to Queue", icon="queue-add")
+        self.download_btn = Button("Download", icon="download")
+        self.remove_btn = Button("Remove", "danger", icon="trash")
         self.count = label("", "Caption")
         for w in (self.filter, vline(), self.play_btn, self.queue_btn, self.download_btn, vline(), self.remove_btn):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.count)
 
-        self.list = TrackListView("library", "還沒有收藏", "在搜尋結果按愛心收藏歌曲。")
+        self.list = TrackListView("library", "Your library is empty", "Save songs with the heart in Search.")
         self.list.actions = [
-            RowAction("queue-add", "加入佇列", lambda r: actions.enqueue([self.list.tracks()[r]])),
-            RowAction("download", "下載", lambda r: actions.download([self.list.tracks()[r]]),
+            RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.list.tracks()[r]])),
+            RowAction("download", "Download", lambda r: actions.download([self.list.tracks()[r]]),
                       lambda t: bool(t.local_path)),
         ]
         self.list.activated_row.connect(lambda r: actions.play(self.list.tracks()[r:]))
@@ -97,7 +100,7 @@ class LibraryPage(Page):
                 self.list.selectionModel().select(self.list.model_.index(i),
                                                   self.list.selectionModel().SelectionFlag.Select)
         total = len(self.library)
-        self.count.setText(f"{len(tracks):,} / {total:,} 首" if q else f"{total:,} 首")
+        self.count.setText(f"{len(tracks):,} of {total:,} songs" if q else f"{total:,} song{'s' if total != 1 else ''}")
         self._update_buttons()
 
     def _targets(self):
@@ -114,7 +117,7 @@ class LibraryPage(Page):
 
     def _menu(self, rows, pos) -> None:
         tracks = [self.list.tracks()[r] for r in rows]
-        self.actions.menu(self, tracks, [("trash", "從收藏移除", self.remove)]).exec(pos)
+        self.actions.menu(self, tracks, [("trash", "Remove from Library", self.remove)]).exec(pos)
 
     # ---- commands ------------------------------------------------------------
 
@@ -122,42 +125,41 @@ class LibraryPage(Page):
         tracks = self.list.selected_tracks()
         if not tracks:
             return
-        name = f"「{tracks[0].title}」" if len(tracks) == 1 else f"{len(tracks)} 首歌"
-        downloaded = sum(1 for t in tracks if t.local_path and t.source != LOCAL)
-        detail = "已下載的音檔也會一併刪除；佇列不受影響。" if downloaded else "不會影響佇列與播放紀錄。"
-        if confirm(self, f"移除{name}？", detail, "移除", danger=True):
-            self.library.remove([t.key for t in tracks])
-            self.toast("success", "已移除")
+        name = f"“{tracks[0].title}”" if len(tracks) == 1 else f"{len(tracks)} songs"
+        keys = [t.key for t in tracks]
+        self.actions.remove_with_files(self, tracks, f"Remove {name} from Library?",
+                                       "Your queue and history stay as they are.",
+                                       lambda: self.library.remove(keys, delete_files=False))
 
     def add_files(self) -> None:
         pattern = " ".join(f"*{e}" for e in sorted(AUDIO_EXTS))
-        files, _ = QFileDialog.getOpenFileNames(self, "加入音樂檔", "", f"音樂檔 ({pattern})")
+        files, _ = QFileDialog.getOpenFileNames(self, "Add Music Files", "", f"Audio ({pattern})")
         if files:
             n = self.library.add([local_track(f) for f in files if os.path.splitext(f)[1].lower() in AUDIO_EXTS])
-            self.toast("success", f"已加入 {n} 首")
+            self.toast("success", f"Added {n} song{'s' if n != 1 else ''}")
 
     def import_playlist(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "匯入歌單", "", "歌單 (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Import Playlist", "", "Playlist (*.json)")
         if not path:
             return
         try:
             n = self.library.import_file(path)
         except Exception as exc:
-            log.error("匯入失敗: %s", exc)
-            self.toast("danger", "無法讀取歌單")
+            log.error("Import failed: %s", exc)
+            self.toast("danger", "Couldn’t read that file")
             return
-        log.info("已匯入 %d 首（%s）", n, os.path.basename(path))
-        self.toast("success", f"已匯入 {n} 首")
+        log.info("Imported %d songs (%s)", n, os.path.basename(path))
+        self.toast("success", f"Imported {n} song{'s' if n != 1 else ''}")
 
     def export_playlist(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "匯出歌單", "Aria 歌單.json", "歌單 (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Library", "Aria Library.json", "Playlist (*.json)")
         if not path:
             return
         try:
             n = self.library.export_file(path)
         except OSError as exc:
-            log.error("匯出失敗: %s", exc)
-            self.toast("danger", "無法寫入檔案")
+            log.error("Export failed: %s", exc)
+            self.toast("danger", "Couldn’t write the file")
             return
-        log.info("已匯出 %d 首到 %s", n, path)
-        self.toast("success", f"已匯出 {n} 首")
+        log.info("Exported %d songs to %s", n, path)
+        self.toast("success", f"Exported {n} song{'s' if n != 1 else ''}")

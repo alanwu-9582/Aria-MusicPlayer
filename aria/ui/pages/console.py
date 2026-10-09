@@ -22,18 +22,18 @@ LEVEL_TOKEN = {logging.DEBUG: "tertiary", logging.INFO: "label", logging.WARNING
 
 class ConsolePage(Page):
     def __init__(self, bus: applog.LogBus, execute):
-        super().__init__("主控台")
+        super().__init__("Console")
         self.bus = bus
         self.execute = execute
         self._history: list[str] = []
         self._hpos = 0
 
-        clear = Button("清除", "borderless", icon="trash", tooltip="清除畫面上的紀錄")
+        clear = Button("Clear", "borderless", icon="trash")
         clear.clicked.connect(self.clear)
         self.header.addWidget(clear)
 
         bar = self.toolbar()
-        self.level = Segmented(["全部", "警告"], compact=True, tooltips=["顯示全部紀錄", "只顯示警告與錯誤"])
+        self.level = Segmented(["All", "Warnings"], compact=True)
         self.level.changed.connect(lambda _i: self.rebuild())
         bar.addWidget(self.level)
         bar.addStretch(1)
@@ -50,8 +50,7 @@ class ConsolePage(Page):
 
         self.prompt = QLineEdit()
         self.prompt.setFont(font("callout", mono=True))
-        self.prompt.setPlaceholderText("指令（help）")
-        self.prompt.setToolTip("輸入指令後按 Enter；↑ ↓ 叫出先前的指令。例如：play 晴天、vol 50、auto off")
+        self.prompt.setPlaceholderText("Command (help)")
         self.prompt.returnPressed.connect(self._run)
         self.prompt.installEventFilter(self)
         self.root.addWidget(self.prompt)
@@ -109,7 +108,7 @@ class ConsolePage(Page):
         try:
             out = self.execute(cmd)
         except Exception as exc:
-            out = f"錯誤：{exc}"
+            out = f"Error: {exc}"
         if out == "\f":
             self.clear()
         elif out:

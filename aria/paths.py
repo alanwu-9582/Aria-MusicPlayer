@@ -1,12 +1,14 @@
 """Filesystem locations. Everything lives next to the app so it stays portable."""
 
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT / "assets"
 VLC_DIR = ROOT / "vlc-3.0.18"
 
-DATA_DIR = ROOT / "data"
+# ARIA_DATA_DIR lets a second copy (or a test run) keep its own library and settings.
+DATA_DIR = Path(os.environ["ARIA_DATA_DIR"]) if os.environ.get("ARIA_DATA_DIR") else ROOT / "data"
 AUDIO_DIR = DATA_DIR / "audio"
 CACHE_DIR = DATA_DIR / "cache"
 THUMB_DIR = CACHE_DIR / "thumbs"
@@ -14,6 +16,8 @@ THUMB_DIR = CACHE_DIR / "thumbs"
 LIBRARY_FILE = DATA_DIR / "library.json"
 SESSION_FILE = DATA_DIR / "session.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+PLAYLISTS_FILE = DATA_DIR / "playlists.json"
+SHELF_FILE = DATA_DIR / "shelf.json"
 LOG_FILE = DATA_DIR / "aria.log"
 
 # v1 files, migrated on first launch

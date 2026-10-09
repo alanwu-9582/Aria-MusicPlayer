@@ -41,7 +41,7 @@ class _Relay(QObject):
         if self.on_error:
             self.on_error(exc)
         else:
-            log.warning("背景工作失敗: %s", exc)
+            log.warning("Background task failed: %s", exc)
 
     def _release(self):
         _alive.discard(self)

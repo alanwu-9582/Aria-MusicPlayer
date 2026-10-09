@@ -40,16 +40,32 @@ class Spotify(Provider):
     def match(self, url: str) -> bool:
         return bool(_LINK.search(url))
 
-    def parse(self, url: str) -> list[Track]:
+    def _entity(self, url: str) -> tuple[str, str, dict]:
         m = _LINK.search(url)
         if not m:
-            raise ValueError("無法辨識的 Spotify 連結")
+            raise ValueError("Unrecognised Spotify link")
         kind, sid = m.groups()
         page = http.get(f"https://open.spotify.com/embed/{kind}/{sid}").text
         data = _NEXT_DATA.search(page)
         if not data:
-            raise RuntimeError("Spotify 頁面格式已變更")
-        entity = json.loads(data.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
+            raise RuntimeError("Spotify changed its page format")
+        return kind, sid, json.loads(data.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
+
+    def album(self, url: str) -> dict:
+        kind, sid, entity = self._entity(url)
+        release = entity.get("releaseDate") or {}
+        year = (release.get("isoString") or "")[:4] if isinstance(release, dict) else str(release)[:4]
+        return {"title": entity.get("name") or entity.get("title", ""),
+                "artist": (entity.get("subtitle") or _artists(entity)).replace("\xa0", " "),
+                "cover": _cover(entity), "url": f"https://open.spotify.com/{kind}/{sid}",
+                "source": SPOTIFY, "year": year, "tracks": self._tracks(kind, sid, entity),
+                "kind": "album" if kind == "album" else "playlist"}
+
+    def parse(self, url: str) -> list[Track]:
+        kind, sid, entity = self._entity(url)
+        return self._tracks(kind, sid, entity)
+
+    def _tracks(self, kind: str, sid: str, entity: dict) -> list[Track]:
         cover = _cover(entity)
         if kind == "track":
             return [Track(source=SPOTIFY, id=sid, title=entity.get("name") or entity.get("title", ""),
@@ -74,7 +90,7 @@ class Spotify(Provider):
             return Track(source="youtube", id=known, title=track.title, artist=track.artist)
         candidates = self.youtube.search(f"{track.artist} {track.title}", limit=6)
         if not candidates:
-            raise RuntimeError("在 YouTube 找不到對應的歌曲")
+            raise RuntimeError("No matching song on YouTube")
         best = max(candidates, key=lambda c: _score(track, c))
         with self._lock:
             self._matches[track.id] = best.id

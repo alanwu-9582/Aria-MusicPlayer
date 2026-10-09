@@ -15,7 +15,7 @@ from aria.ui.widgets.controls import IconButton, hbox, label
 from aria.ui.widgets.slider import Slider
 
 REPEAT_ICON = {"off": "repeat", "all": "repeat", "one": "repeat-one"}
-REPEAT_TIP = {"off": "重複：關", "all": "重複：全部", "one": "重複：單曲"}
+REPEAT_TIP = {"off": "Repeat: Off", "all": "Repeat: All", "one": "Repeat: One"}
 
 
 class Cover(QWidget):
@@ -59,7 +59,6 @@ class ElidedLabel(QLabel):
 
     def set_full_text(self, text: str) -> None:
         self._full = text
-        self.setToolTip(text)
         self._elide()
 
     def resizeEvent(self, e):
@@ -67,7 +66,9 @@ class ElidedLabel(QLabel):
         self._elide()
 
     def _elide(self):
-        self.setText(QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, self.width()))
+        shown = QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, self.width())
+        self.setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")      # only when cut off
 
 
 class PlayerBar(QFrame):
@@ -93,19 +94,20 @@ class PlayerBar(QFrame):
         texts.addWidget(self.title)
         texts.addWidget(self.artist)
         texts.addStretch(1)
-        self.save_btn = IconButton("heart", "收藏（Ctrl+D）", checkable=True, tone="secondary")
+        self.save_btn = IconButton("heart", "Save (Ctrl+D)", checkable=True, tone="secondary")
         left = QWidget()
         left.setFixedWidth(280)
-        left.setLayout(hbox(self.cover, 4, texts, self.save_btn, spacing=8))
+        self.playlist_btn = IconButton("list", "Add to Playlist (Ctrl+P)", tone="secondary")
+        left.setLayout(hbox(self.cover, 4, texts, self.playlist_btn, self.save_btn, spacing=4))
         left.layout().setStretch(2, 1)
         grid.addWidget(left, 0, 0, 2, 1)
 
         # centre: transport + seek
-        self.shuffle_btn = IconButton("shuffle", "打亂佇列", tone="secondary")
-        self.prev_btn = IconButton("previous", "上一首（Ctrl+←）", icon_size=15)
-        self.play_btn = IconButton("play", "播放（空白鍵）", icon_size=16, tone="on_accent")
+        self.shuffle_btn = IconButton("shuffle", "Shuffle Queue", tone="secondary")
+        self.prev_btn = IconButton("previous", "Previous (Ctrl+←)", icon_size=15)
+        self.play_btn = IconButton("play", "Play (Space)", icon_size=16, tone="on_accent")
         self.play_btn.setObjectName("PlayButton")
-        self.next_btn = IconButton("next", "下一首（Ctrl+→）", icon_size=15)
+        self.next_btn = IconButton("next", "Next (Ctrl+→)", icon_size=15)
         self.repeat_btn = IconButton("repeat", REPEAT_TIP["off"], checkable=True, tone="secondary")
         grid.addLayout(hbox(None, self.shuffle_btn, self.prev_btn, self.play_btn, self.next_btn,
                             self.repeat_btn, None, spacing=8), 0, 1)
@@ -119,19 +121,18 @@ class PlayerBar(QFrame):
         self.length.setObjectName("Mono")
         self.length.setFont(font("caption", mono=True))
         self.length.setFixedWidth(46)
-        self.seek = Slider(0, 0, step=5, name="播放進度")
-        self.seek.setToolTip("點擊或拖曳跳轉；方向鍵 ±5 秒")
+        self.seek = Slider(0, 0, step=5, name="Position")
         grid.addLayout(hbox(self.time, self.seek, self.length, spacing=8), 1, 1)
 
         # right: auto-recommend + volume
-        self.auto_btn = IconButton("sparkles", "自動推薦：佇列播完時接著播放相關歌曲", checkable=True)
-        self.mute_btn = IconButton("volume", "靜音", tone="secondary")
-        self.volume = Slider(100, 70, step=5, name="音量")
+        self.auto_btn = IconButton("sparkles", "Autoplay", checkable=True)
+        self.mute_btn = IconButton("volume", "Mute", tone="secondary")
+        self.volume = Slider(100, 70, step=5, name="Volume")
         self.volume.setFixedWidth(110)
-        self.volume.setToolTip("音量（雙擊回到 70）")
         right = QWidget()
         right.setFixedWidth(280)
-        right.setLayout(hbox(None, self.auto_btn, 8, self.mute_btn, self.volume, spacing=4))
+        self.mini_btn = IconButton("mini", "Mini Player (Ctrl+Shift+M)", tone="secondary")
+        right.setLayout(hbox(None, self.auto_btn, self.mini_btn, 8, self.mute_btn, self.volume, spacing=4))
         grid.addWidget(right, 0, 2, 2, 1)
         grid.setColumnStretch(1, 1)
 
@@ -185,7 +186,7 @@ class PlayerBar(QFrame):
 
     def _update_volume_icon(self, v: float) -> None:
         self.mute_btn.set_icon("mute" if v == 0 else "volume-low" if v < 50 else "volume")
-        self.mute_btn.setToolTip("取消靜音" if v == 0 else "靜音")
+        self.mute_btn.setToolTip("Unmute" if v == 0 else "Mute")
 
     def _toggle_saved(self) -> None:
         if self.pb.current:
@@ -202,13 +203,14 @@ class PlayerBar(QFrame):
         self.title.set_full_text(t.title if t else "Aria")
         self.artist.set_full_text((f"{t.artist} · {t.source_label}" if t.artist else t.source_label) if t else "")
         self.save_btn.setEnabled(t is not None)
+        self.playlist_btn.setEnabled(t is not None)
         self._sync_saved()
         self._on_position(0, t.duration if t else 0)
 
     def _on_state(self, state: str) -> None:
         playing = state in (PLAYING, LOADING)
         self.play_btn.set_icon("pause" if playing else "play")
-        tip = "暫停（空白鍵）" if playing else "播放（空白鍵）"
+        tip = "Pause (Space)" if playing else "Play (Space)"
         self.play_btn.setToolTip(tip)
         self.play_btn.setAccessibleName(tip.split("（")[0])
 

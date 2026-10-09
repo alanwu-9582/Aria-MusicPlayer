@@ -43,7 +43,7 @@ def provider_for(url: str) -> Provider:
     for p in PROVIDERS:
         if p.match(url):
             return p
-    raise ValueError("不支援的連結")
+    raise ValueError("Unsupported link")
 
 
 def detect(url: str) -> tuple[str, str] | None:
@@ -64,6 +64,19 @@ def parse(text: str) -> list[Track]:
 
 def search(source: str, query: str, limit: int = 20) -> list[Track]:
     return BY_SOURCE[source].search(query, limit)
+
+
+def album(text: str) -> dict:
+    """Album / playlist link → {title, artist, cover, url, source, year, tracks}."""
+    url = normalize_link(text)
+    p = provider_for(url)
+    if not hasattr(p, "album"):
+        raise ValueError("That link isn’t an album or playlist")
+    return p.album(url)
+
+
+def search_albums(query: str, limit: int = 12) -> list[dict]:
+    return youtube.search_albums(query, limit)
 
 
 # ---- streams -----------------------------------------------------------------
@@ -89,9 +102,21 @@ def stream(track: Track, force: bool = False) -> Stream:
 
 
 def has_fresh_stream(track: Track) -> bool:
+    return cached_stream(track) is not None
+
+
+def cached_stream(track: Track, local: bool = True) -> Stream | None:
+    """A ready-to-play stream without any network access, or None."""
+    if local and track.local_path and os.path.exists(track.local_path):
+        return Stream(url=track.local_path)
     with _streams_lock:
         s = _streams.get(track.key)
-    return bool(s and s.fresh)
+    return s if s and s.fresh else None
+
+
+def remote_stream(track: Track) -> Stream:
+    """The online stream even when a downloaded copy exists (for switching back)."""
+    return stream(track.copy() if not track.local_path else Track.from_dict({**track.to_dict(), "local_path": ""}))
 
 
 def download(track: Track, progress=None) -> str:

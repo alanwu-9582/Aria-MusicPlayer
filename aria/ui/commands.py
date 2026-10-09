@@ -16,21 +16,21 @@ from aria.core.models import format_duration
 log = logging.getLogger("console")
 
 HELP = """\
-play [關鍵字|連結]   播放／暫停；帶參數時直接播放
-add <關鍵字|連結>    加入佇列（連結可為歌單）
-search <關鍵字>      到搜尋頁搜尋
-next · prev · stop  切歌／停止
-vol [0-100]         查看或設定音量
-seek <秒|分:秒>      跳到指定時間
-queue · history     列出佇列／播放紀錄
-shuffle · clear     打亂／清空佇列
-auto [on|off]       自動推薦
-repeat [off|all|one] 重複模式
-rec                 重新推薦並列出
+play [query|link]    play / pause; with an argument, play it now
+add <query|link>     add to queue (links may be playlists)
+search <query>       search on the Search page
+next · prev · stop   skip / stop
+vol [0-100]          show or set the volume
+seek <sec|min:sec>   jump to a time
+queue · history      list the queue / history
+shuffle · clear      shuffle / clear the queue
+auto [on|off]        autoplay
+repeat [off|all|one] repeat mode
+rec                  refresh and list recommendations
 theme [system|light|dark]
-data                開啟資料夾
-update              更新 yt-dlp（YouTube 改版而無法播放時）
-version · cls       版本／清除畫面"""
+data                 open the data folder
+update               update yt-dlp (when YouTube stops playing)
+version · cls        version / clear the console"""
 
 
 class Commands:
@@ -42,7 +42,7 @@ class Commands:
         name, _, arg = line.strip().partition(" ")
         fn = getattr(self, f"cmd_{name.lower()}", None)
         if fn is None:
-            return f"未知的指令「{name}」，輸入 help 查看全部"
+            return f"Unknown command “{name}” — type help"
         return fn(arg.strip())
 
     # ---- playback ------------------------------------------------------------
@@ -55,12 +55,12 @@ class Commands:
 
         def done(tracks):
             if not tracks:
-                log.warning("找不到：%s", arg)
+                log.warning("Nothing found: %s", arg)
                 return
             then(tracks)
 
-        tasks.run(work, done, lambda e: log.error("找不到 %s: %s", arg, e))
-        return "處理中…"
+        tasks.run(work, done, lambda e: log.error("Nothing found for %s: %s", arg, e))
+        return "Working…"
 
     def cmd_play(self, arg):
         if not arg:
@@ -70,7 +70,7 @@ class Commands:
 
     def cmd_add(self, arg):
         if not arg:
-            return "用法：add <關鍵字|連結>"
+            return "Usage: add <query|link>"
         return self._resolve(arg, lambda ts: self.w.actions.enqueue(ts))
 
     def cmd_search(self, arg):
@@ -95,21 +95,21 @@ class Commands:
             self.pb.set_volume(v)
             self.w.player_bar.volume.set_value(v)
             self.w.player_bar._update_volume_icon(v)
-        return f"音量 {self.pb.player.volume}"
+        return f"Volume {self.pb.player.volume}"
 
     def cmd_seek(self, arg):
         parts = [float(x) for x in arg.split(":")]
         secs = parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0]
         self.pb.seek(secs)
-        return f"跳到 {format_duration(secs)}"
+        return f"Jumped to {format_duration(secs)}"
 
     def cmd_queue(self, _):
         lines = [f"{i + 1:>3}. {t.title}" for i, t in enumerate(self.pb.queue[:50])]
-        cur = f"▶ {self.pb.current.title}" if self.pb.current else "（未播放）"
-        return "\n".join([cur] + lines) if lines else cur + "\n佇列是空的"
+        cur = f"▶ {self.pb.current.title}" if self.pb.current else "(nothing playing)"
+        return "\n".join([cur] + lines) if lines else cur + "\nThe queue is empty"
 
     def cmd_history(self, _):
-        return "\n".join(f"{t.title}" for t in self.pb.history[::-1][:30]) or "沒有紀錄"
+        return "\n".join(f"{t.title}" for t in self.pb.history[::-1][:30]) or "No history"
 
     def cmd_shuffle(self, _):
         self.pb.shuffle()
@@ -120,7 +120,7 @@ class Commands:
     def cmd_auto(self, arg):
         on = {"on": True, "off": False}.get(arg.lower(), not self.pb.autoplay) if arg else not self.pb.autoplay
         self.w.player_bar.auto_btn.setChecked(on)
-        return f"自動推薦 {'開' if on else '關'}"
+        return f"Autoplay {'on' if on else 'off'}"
 
     def cmd_repeat(self, arg):
         if arg in ("off", "all", "one"):
@@ -129,20 +129,20 @@ class Commands:
         else:
             self.pb.cycle_repeat()
         self.w.player_bar._show_repeat(self.pb.repeat)
-        return f"重複：{self.pb.repeat}"
+        return f"Repeat: {self.pb.repeat}"
 
     def cmd_rec(self, _):
         self.pb.refresh_recommendations(force=True)
         if self.pb.recommendations:
             return "\n".join(t.title for t in self.pb.recommendations)
-        return "推薦中…"
+        return "Finding recommendations…"
 
     # ---- app -----------------------------------------------------------------
 
     def cmd_theme(self, arg):
         if arg in ("system", "light", "dark"):
             self.w.set_appearance(arg)
-        return f"外觀：{self.w.settings['appearance']}"
+        return f"Appearance: {self.w.settings['appearance']}"
 
     def cmd_data(self, _):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.DATA_DIR)))
@@ -157,9 +157,9 @@ class Commands:
             import importlib.metadata as md
             return md.version("yt-dlp")
 
-        tasks.run(work, lambda v: log.info("yt-dlp 已更新到 %s，重新啟動 Aria 後生效", v),
-                  lambda e: log.error("更新失敗: %s", e))
-        return "更新中…"
+        tasks.run(work, lambda v: log.info("yt-dlp updated to %s — restart Aria to use it", v),
+                  lambda e: log.error("Update failed: %s", e))
+        return "Updating…"
 
     def cmd_version(self, _):
         return f"Aria {__version__}"

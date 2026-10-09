@@ -31,7 +31,7 @@ class StatusBar(QFrame):
         self.text.setText(" · ".join(p for p in parts if p))
 
     def set_job(self, text: str | None, fraction: float | None = None) -> None:
-        """Background work: "下載中 2/5" + progress; None hides it."""
+        """Background work: "Downloading 2/5" + progress; None hides it."""
         visible = text is not None
         self.job.setVisible(visible)
         self.bar.setVisible(visible)

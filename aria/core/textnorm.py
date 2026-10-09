@@ -39,7 +39,7 @@ VARIANT_MARKERS = re.compile(
     r"mashup|medley|bootleg|edit|reaction|ai)(?![a-z0-9])"
     r"|翻唱|翻自|現場|现场|演唱會|演唱会|伴奏|純音樂|纯音乐|鋼琴|钢琴|吉他|"
     r"教學|教学|降調|降调|升調|升调|加速|減速|减速|混音|串燒|串烧|女聲|女声|男聲|男声|"
-    r"抖音|彈唱|弹唱|改編|改编|重製|重制",
+    r"抖音|彈唱|弹唱|改編|改编|重製|重制|纯享|純享|舞台|节目|節目|翻跳|合唱版",
     re.IGNORECASE,
 )
 
@@ -166,6 +166,65 @@ class Song:
 def same_song(a_title: str, a_artist: str, b_title: str, b_artist: str) -> bool:
     """True when two titles are the same song, whoever performs it."""
     return Song(a_title, a_artist).same(Song(b_title, b_artist))
+
+
+_CHANNEL_NOISE = re.compile(r"\s*(-\s*topic|vevo|official( channel)?|channel|music|官方頻道|官方频道|官方)\s*$",
+                            re.IGNORECASE)
+
+
+def clean_channel(channel: str) -> str:
+    prev = None
+    name = channel.strip()
+    while prev != name:
+        prev = name
+        name = _CHANNEL_NOISE.sub("", name).strip(" -|/")
+    return name or channel.strip()
+
+
+def artist_of(title: str, channel: str = "") -> str:
+    """Display name of the performer behind a video title / channel."""
+    chan = clean_channel(channel)
+    if chan and _fold(chan).replace(" ", "") in _fold(title).replace(" ", ""):
+        return chan
+    t = html.unescape(title).strip()
+    m = re.match(r"^\s*([^【「『《〈\[\(]{1,40}?)\s*[【「『《〈]", t)
+    if m and _NOISE.sub("", _fold(m.group(1))).strip():
+        return m.group(1).strip(" -｜|")
+    if " - " in t:
+        left = t.split(" - ", 1)[0].strip()
+        if 0 < len(left) <= 40 and not _DECOR_BRACKETS.fullmatch(left):
+            return re.sub(r"^[【\[].*?[】\]]\s*", "", left).strip() or chan
+    return chan
+
+
+_COMPILATION = re.compile(r"(?<![a-z])(mix|playlist|compilation|best of|greatest hits|full album|megamix|"
+                          r"nonstop|hours?|top \d+)(?![a-z])|合集|合輯|精選|串燒|串烧|歌單|歌单|小時|小时",
+                          re.IGNORECASE)
+
+
+def is_compilation(title: str, duration: float = 0) -> bool:
+    """Mixes, playlists-as-videos and hour-long loops aren't songs."""
+    return duration > 15 * 60 or bool(_COMPILATION.search(title))
+
+
+def display_title(title: str, artist: str = "") -> str:
+    """The song name for labels, keeping its original case and script."""
+    t = html.unescape(title).strip()
+    for rx in _NAME_BRACKETS:
+        m = rx.search(t)
+        if m and _NOISE.sub("", _fold(m.group(1))).strip(" -_.,"):
+            return m.group(1).strip()
+    t = _DECOR_BRACKETS.sub(" ", t)
+    parts = [p.strip() for p in _SEPARATORS.split(t) if p.strip()]
+    names = _artist_tokens(artist)
+    keep = [p for p in parts if not _is_artist(_fold(p), names)] or parts
+    out = keep[-1] if len(keep) > 1 and _is_artist(_fold(keep[0]), names) else keep[0]
+    return re.sub(r"\s+", " ", out).strip() or title
+
+
+def artist_key(name: str) -> str:
+    """Grouping key for an artist name (case, width, script and spacing folded)."""
+    return re.sub(r"[\s·・,，]+", "", _fold(name))
 
 
 def is_variant(title: str) -> bool:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qs, urlparse
+from collections import Counter
+from urllib.parse import parse_qs, quote, urlparse
 
+from aria.core import textnorm
 from aria.core.models import YOUTUBE, Stream, Track
 from aria.providers import ytdlp
 from aria.providers.base import Provider, audio_template
@@ -75,11 +77,11 @@ class YouTube(Provider):
             return [t for t in map(from_entry, entries) if t]
         vid = video_id(url)
         if not vid:
-            raise ValueError("無法辨識的 YouTube 連結")
+            raise ValueError("Unrecognised YouTube link")
         info = ytdlp.extract(watch_url(vid))
         t = from_entry(info)
         if not t:
-            raise ValueError("找不到影片")
+            raise ValueError("Video not found")
         return [t]
 
     def stream(self, track: Track) -> Stream:
@@ -87,6 +89,40 @@ class YouTube(Provider):
 
     def download(self, track: Track, progress=None) -> str:
         return ytdlp.download(watch_url(track.id), audio_template(track), progress)
+
+    def album(self, url: str) -> dict:
+        pid = playlist_id(url)
+        if not pid:
+            raise ValueError("Not a playlist link")
+        info = ytdlp.flat_info(f"https://www.youtube.com/playlist?list={pid}", limit=200)
+        tracks = [t for t in map(from_entry, info.get("entries") or []) if t]
+        if not tracks:
+            raise ValueError("The playlist is empty")
+        artists = Counter(textnorm.artist_key(textnorm.artist_of(t.title, t.artist)) for t in tracks)
+        top = artists.most_common(1)[0][0] if artists else ""
+        artist = next((textnorm.artist_of(t.title, t.artist) for t in tracks
+                       if textnorm.artist_key(textnorm.artist_of(t.title, t.artist)) == top), "")
+        title = re.sub(r"^(album\s*[-–:]\s*)", "", info.get("title") or "", flags=re.IGNORECASE)
+        return {"title": title, "artist": artist or textnorm.clean_channel(info.get("channel") or ""),
+                "cover": f"https://i.ytimg.com/vi/{tracks[0].id}/hqdefault.jpg",
+                "url": f"https://www.youtube.com/playlist?list={pid}", "source": YOUTUBE,
+                "year": (info.get("modified_date") or "")[:4], "tracks": tracks,
+                # YouTube Music album playlists start with OLAK5uy_
+                "kind": "album" if pid.startswith("OLAK5uy_") or "album" in title.casefold() else "playlist"}
+
+    def search_albums(self, query: str, limit: int = 12) -> list[dict]:
+        """Playlists matching ``query`` (YouTube's playlist search filter)."""
+        url = f"https://www.youtube.com/results?search_query={quote(query)}&sp=EgIQAw%253D%253D"
+        out = []
+        for e in ytdlp.flat(url, limit=limit):
+            pid = e.get("id") or ""
+            thumbs = e.get("thumbnails") or []
+            vid = re.search(r"/vi/([\w-]{11})/", thumbs[-1]["url"]) if thumbs else None
+            out.append({"title": e.get("title") or pid, "artist": textnorm.clean_channel(e.get("channel") or ""),
+                        "cover": f"https://i.ytimg.com/vi/{vid.group(1)}/hqdefault.jpg" if vid else "",
+                        "url": f"https://www.youtube.com/playlist?list={pid}", "source": YOUTUBE,
+                        "kind": "album" if pid.startswith("OLAK5uy_") else "playlist"})
+        return out
 
     def mix(self, vid: str, limit: int = 30) -> list[Track]:
         """YouTube Music radio for a video: songs related to it."""

@@ -18,7 +18,7 @@ SOURCE_LABELS = {
     SPOTIFY: "Spotify",
     SOUNDCLOUD: "SoundCloud",
     WEB: "Web",
-    LOCAL: "本機",
+    LOCAL: "Local",
 }
 
 

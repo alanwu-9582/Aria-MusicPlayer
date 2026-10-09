@@ -39,7 +39,7 @@ class Segmented(QWidget):
         i = max(0, min(len(self.items) - 1, i))
         if i != self._index:
             self._index = i
-            self.setAccessibleDescription(f"{self.items[i]}，第 {i + 1} 個，共 {len(self.items)} 個")
+            self.setAccessibleDescription(f"{self.items[i]}, {i + 1} of {len(self.items)}")
             self.update()
             if emit:
                 self.changed.emit(i)
@@ -136,7 +136,7 @@ class Segmented(QWidget):
 
             selected = i == self._index
             p.setFont(font("callout", 600 if selected else 400))
-            p.setPen(theme.color("label"))
+            p.setPen(theme.color("label" if self.isEnabled() else "tertiary"))
             text = QFontMetrics(p.font()).elidedText(self.items[i], Qt.TextElideMode.ElideRight, int(r.width() - 8))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
         p.end()
