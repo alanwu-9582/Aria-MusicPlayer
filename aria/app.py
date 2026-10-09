@@ -17,6 +17,8 @@ def main() -> int:
     paths.ensure_dirs()
     bus = applog.setup()
     log = logging.getLogger("aria")
+    # Under pythonw there is no console: send anything uncaught to the log instead of losing it.
+    sys.excepthook = lambda kind, exc, tb: log.error("Unexpected error", exc_info=(kind, exc, tb))
 
     if sys.platform == "win32":
         # Own taskbar group + icon instead of python.exe's
@@ -48,7 +50,9 @@ def main() -> int:
 
     splash.step("Loading the player…")
     from aria.core import tasks
+    from aria.core.balance import VolumeBalance
     from aria.core.library import Downloader, Library
+    from aria.core.listening import Listening
     from aria.core.lists import Playlists, Shelf
     from aria.core.playback import Playback
 
@@ -56,18 +60,24 @@ def main() -> int:
     legacy = storage.migrate_legacy()
     library = Library(legacy[0] if legacy else None)
     playback = Playback(settings, legacy[1] if legacy else None)
+    playback.library = library
+    listening = Listening(playback, library)
+    playback.listening = listening
+    balance = VolumeBalance(settings, playback.player)
     downloader = Downloader()
     playlists = Playlists()
     shelf = Shelf()
 
     splash.step("Preparing the interface…")
     from aria.ui.main_window import MainWindow
-    window = MainWindow(settings, playback, library, downloader, playlists, shelf, bus)
+    window = MainWindow(settings, playback, library, downloader, playlists, shelf, bus, listening, balance)
     splash.finish(window)
     log.info("Aria %s started · %d in library · %d in queue", __version__, len(library), len(playback.queue))
 
     code = app.exec()
 
+    balance.shutdown()                 # other apps get their own volume back
+    listening.flush()
     playback.shutdown()
     settings.flush()
     library.flush()

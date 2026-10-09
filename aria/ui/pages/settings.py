@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLineEdit, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from aria import paths
+from aria.core.balance import DEFAULT_EXCLUDED
 from aria.ui.pages.base import Page
-from aria.ui.widgets.controls import Button, Toggle, label
+from aria.ui.widgets.controls import Button, CheckBox, IconButton, Toggle, hbox, label
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import reserve_scrollbar
 
@@ -90,6 +91,26 @@ class SettingsPage(Page):
         play.field("Crossfade Length", self.fade_len)
         col.addWidget(play)
 
+        # ---- audio: Volume Balance
+        self.balance_apps: AppList | None = None
+        bal = getattr(window, "balance", None)
+        if bal is not None and bal.available:
+            audio = Group("Audio")
+            self.balance_mode = Segmented(["All Apps Except Excluded", "Only Chosen Apps"])
+            self.balance_mode.set_index(1 if settings["balance_mode"] == "only" else 0)
+            audio.field("Volume Balance turns down", self.balance_mode)
+            self.balance_apps = AppList(settings, bal)
+            self.apps_title = label("", "Secondary")
+            box = QVBoxLayout()
+            box.setSpacing(5)
+            box.addWidget(self.apps_title)
+            box.addWidget(self.balance_apps)
+            audio.grid.addLayout(box, audio._row, 0, 1, 2)
+            audio._row += 1
+            self.balance_mode.changed.connect(self._set_balance_mode)
+            self._set_balance_mode(self.balance_mode.index(), save=False)
+            col.addWidget(audio)
+
         # ---- lyrics
         lyr = Group("Lyrics")
         self.lyrics_enh = self._toggle("Deep Lyrics Search", "lyrics_enhanced",
@@ -104,7 +125,8 @@ class SettingsPage(Page):
         self.appearance.changed.connect(lambda i: window.set_appearance(APPEARANCES[i]))
         look.field("Theme", self.appearance)
         self.smart = self._toggle("Smart Artwork", "smart_artwork", "Tint the background from the cover")
-        look.pair(self.smart)
+        self.motion = self._toggle("Reduce Motion", "reduce_motion", "Hover effects change instantly")
+        look.pair(self.smart, self.motion)
         col.addWidget(look)
 
         # ---- window
@@ -142,5 +164,87 @@ class SettingsPage(Page):
     def _set_fade_len(self, i: int) -> None:
         self._set("crossfade_secs", CROSSFADE_SECS[i])
 
+    def _set_balance_mode(self, i: int, save: bool = True) -> None:
+        if save:
+            self._set("balance_mode", "only" if i == 1 else "exclude")
+        self.apps_title.setText("Chosen Apps" if i == 1 else "Excluded Apps")
+        self.apps_title.setToolTip("" if i == 1 else "Call apps (Discord, Teams, Zoom…) are excluded unless unticked")
+        self.balance_apps.rebuild()
+
+    def on_shown(self) -> None:
+        if self.balance_apps is not None:
+            self.balance_apps.rebuild(rescan=True)
+
     def sync_appearance(self, appearance: str) -> None:
         self.appearance.set_index(APPEARANCES.index(appearance))
+
+
+class AppList(QWidget):
+    """Apps for Volume Balance: ticked = excluded (or, in "only" mode, managed).
+    Lists the apps making sound right now plus every app already named."""
+
+    def __init__(self, settings, balance):
+        super().__init__()
+        self.settings = settings
+        self.balance = balance
+        self._seen: list[str] = []
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        self.rows = QGridLayout()
+        self.rows.setHorizontalSpacing(14)
+        self.rows.setVerticalSpacing(0)
+        lay.addLayout(self.rows)
+        self.field = QLineEdit()
+        self.field.setPlaceholderText("Add an app, e.g. zoom.exe")
+        self.field.returnPressed.connect(self._add)
+        add = Button("Add", icon="plus")
+        add.clicked.connect(self._add)
+        scan = IconButton("refresh", "Find Apps Playing Sound", tone="secondary")
+        scan.clicked.connect(lambda: self.rebuild(rescan=True))
+        lay.addSpacing(6)
+        lay.addLayout(hbox(self.field, add, scan))
+
+    def _key(self) -> str:
+        return "balance_only" if self.settings["balance_mode"] == "only" else "balance_excluded"
+
+    def _chosen(self) -> list[str]:
+        return self.balance.excluded() if self._key() == "balance_excluded" else list(self.settings["balance_only"])
+
+    def rebuild(self, rescan: bool = False) -> None:
+        if rescan or not self._seen:
+            self._seen = self.balance.apps()
+        chosen = self._chosen()
+        # Apps making sound now, plus any the user named; built-in call apps that
+        # aren't running stay excluded without crowding the list.
+        named = {c.lower() for c in chosen} - set(DEFAULT_EXCLUDED)
+        names = sorted(set(self._seen) | named)
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for i, name in enumerate(names):
+            box = CheckBox(name.removesuffix(".exe"))
+            box.setToolTip(name)
+            box.setChecked(name in {c.lower() for c in chosen})
+            box.toggled.connect(lambda on, n=name: self._toggle(n, on))
+            self.rows.addWidget(box, i // 2, i % 2)
+
+    def _toggle(self, name: str, on: bool) -> None:
+        chosen = [c.lower() for c in self._chosen()]
+        if on and name not in chosen:
+            chosen.append(name)
+        elif not on and name in chosen:
+            chosen.remove(name)
+        self.settings[self._key()] = chosen
+        self.balance.set_value(self.balance.value)       # re-apply with the new list
+
+    def _add(self) -> None:
+        name = self.field.text().strip().lower()
+        if not name:
+            return
+        if not name.endswith(".exe"):
+            name += ".exe"
+        self.field.clear()
+        self._toggle(name, True)
+        self.rebuild()

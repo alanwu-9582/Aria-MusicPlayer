@@ -93,8 +93,6 @@ class Commands:
         if arg:
             v = max(0, min(100, int(arg)))
             self.pb.set_volume(v)
-            self.w.player_bar.volume.set_value(v)
-            self.w.player_bar._update_volume_icon(v)
         return f"Volume {self.pb.player.volume}"
 
     def cmd_seek(self, arg):

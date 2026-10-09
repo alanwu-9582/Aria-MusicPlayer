@@ -47,6 +47,9 @@ class LyricsView(QWidget):
         self._relayout()
         self.update()
 
+    def line_text(self, i: int) -> str:
+        return self.lyrics.lines[i][1] if self.lyrics and 0 <= i < len(self.lyrics.lines) else ""
+
     def set_position(self, seconds: float) -> None:
         if not self.lyrics or not self.lyrics.synced:
             return
@@ -69,12 +72,12 @@ class LyricsView(QWidget):
             return
         y = 0
         w = max(80, self.width() - 32)
+        fm = QFontMetrics(font("title3", 600))          # size for the largest style so lines never jump
         for i, (_t, text) in enumerate(self.lyrics.lines):
             if not text:
                 y += STANZA
                 self._layout.append(QRect(16, y, w, 0))
                 continue
-            fm = QFontMetrics(font("title3", 600))      # size for the largest style so lines never jump
             r = fm.boundingRect(QRect(0, 0, w, 10_000), Qt.TextFlag.TextWordWrap, text)
             self._layout.append(QRect(16, y, w, r.height()))
             y += r.height() + GAP
@@ -137,6 +140,8 @@ class LyricsView(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
         i = self._line_at(e.position().toPoint())
         if i >= 0 and self.lyrics and self.lyrics.synced and self.lyrics.lines[i][0] is not None:
             self._user_scrolled = 0

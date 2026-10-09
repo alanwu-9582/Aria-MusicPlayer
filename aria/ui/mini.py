@@ -13,6 +13,7 @@ from aria.ui.theme import theme
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets import tint as tint_mod
 from aria.ui.widgets.controls import IconButton
+from aria.ui.widgets.slider import Slider
 
 
 class MiniPlayer(QWidget):
@@ -55,6 +56,13 @@ class MiniPlayer(QWidget):
         for b in (self.prev, self.play, self.next):
             controls.addWidget(b)
         controls.addStretch(1)
+        # Volume, kept in step with the main player bar through Playback.volume_changed.
+        self.mute = IconButton("volume", "Mute", size=24, icon_size=14, tone="secondary")
+        self.volume = Slider(100, 70, step=5, name="Volume")
+        self.volume.setFixedWidth(92)
+        self.volume.set_value(playback.player.volume)
+        controls.addWidget(self.mute)
+        controls.addWidget(self.volume)
         col.addLayout(controls)
         root.addLayout(col, 1)
 
@@ -72,6 +80,11 @@ class MiniPlayer(QWidget):
         self.next.clicked.connect(playback.next)
         self.expand_btn.clicked.connect(self.expand)
         self.close_btn.clicked.connect(self.hide)
+        self._unmuted = playback.player.volume or 70
+        self.volume.moved.connect(lambda v: playback.set_volume(int(v)))
+        self.mute.clicked.connect(self._toggle_mute)
+        playback.volume_changed.connect(self._on_volume)
+        self._on_volume(playback.player.volume)
         playback.current_changed.connect(self._on_track)
         playback.state_changed.connect(self._on_state)
         playback.position_changed.connect(self._on_pos)
@@ -91,6 +104,16 @@ class MiniPlayer(QWidget):
         pm = thumbs_mod.instance().get(t.thumbnail) if t and t.thumbnail else None
         if pm is not None or not t:
             self.tint.set(tint_mod.hue_of(pm) if pm and not pm.isNull() and self.settings["smart_artwork"] else None)
+
+    def _on_volume(self, v: int) -> None:
+        if v:
+            self._unmuted = v
+        self.volume.set_value(v)
+        self.mute.set_icon("mute" if v == 0 else "volume-low" if v < 50 else "volume")
+        self.mute.setToolTip("Unmute" if v == 0 else "Mute")
+
+    def _toggle_mute(self) -> None:
+        self.pb.set_volume(0 if self.pb.player.volume else (self._unmuted or 70))
 
     def _on_state(self, s: str) -> None:
         self.play.set_icon("pause" if s in (PLAYING, LOADING) else "play")

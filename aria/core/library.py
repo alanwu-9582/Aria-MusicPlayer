@@ -21,6 +21,7 @@ AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".webm",
 class Library(QObject):
     changed = Signal()
     track_updated = Signal(str)          # key
+    added = Signal(list)                 # keys newly saved
 
     def __init__(self, tracks: list[Track] | None = None):
         super().__init__()
@@ -66,13 +67,14 @@ class Library(QObject):
 
     def add(self, tracks: list[Track]) -> int:
         """Newest on top. Returns how many were new."""
-        added = 0
+        fresh: list[str] = []
         for t in reversed(tracks):
             if self._insert(t.copy(), 0):
-                added += 1
-        if added:
+                fresh.append(t.key)
+        if fresh:
             self._changed()
-        return added
+            self.added.emit(fresh)
+        return len(fresh)
 
     def toggle(self, track: Track) -> bool:
         """Save or un-save; returns the new saved state."""

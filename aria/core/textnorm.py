@@ -63,6 +63,11 @@ def _fold(text: str) -> str:
     return text.casefold().translate(_T2S)
 
 
+def fold(text: str) -> str:
+    """Public folding for search: case, width and traditional/simplified script."""
+    return _fold(text)
+
+
 def _parts(title: str, names: list[str]) -> list[str]:
     """Cleaned title pieces that could be the song name (artist pieces removed)."""
     t = _fold(title)
@@ -168,7 +173,7 @@ def same_song(a_title: str, a_artist: str, b_title: str, b_artist: str) -> bool:
     return Song(a_title, a_artist).same(Song(b_title, b_artist))
 
 
-_CHANNEL_NOISE = re.compile(r"\s*(-\s*topic|vevo|official( channel)?|channel|music|官方頻道|官方频道|官方)\s*$",
+_CHANNEL_NOISE = re.compile(r"\s*(-\s*topic|vevo|official( channel)?|channel|youtube|music|官方頻道|官方频道|官方)\s*$",
                             re.IGNORECASE)
 
 
@@ -233,3 +238,86 @@ def is_variant(title: str) -> bool:
 
 def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, _fold(a), _fold(b)).ratio()
+
+
+# ---- originality -----------------------------------------------------------------
+# Derivative uploads re-package someone else's recording (lyric/subtitle videos,
+# sped-up or nightcore edits, fan videos, remixes, karaoke tracks…). A cover or a
+# live performance is a new performance, so it doesn't count as derivative.
+
+_DERIVATIVE = re.compile(
+    r"(?<![a-z0-9])(lyrics?|lyric video|sub(?:s|bed)?|eng ?sub|vietsub|legendado|letra|romaji|"
+    r"nightcore|sped ?up|speed ?up|slowed|reverb|8d|bass ?boosted|daycore|"
+    r"amv|gmv|fan ?made|edit audio|remix|rmx|mashup|medley|bootleg|"
+    r"karaoke|instrumental|inst\.?|off ?vocal|backing track|"
+    r"tutorial|lesson|reaction|ai cover|ai version|tiktok version)(?![a-z0-9])"
+    r"|歌詞|歌词|動態|动态|字幕|中字|中日|中英|日中|羅馬|罗马|拼音|歌詞付き|"
+    r"加速|減速|减速|降調|降调|升調|升调|倍速|"
+    r"二創|二创|手書き|手书|鬼畜|自製|自制|混剪|剪輯|剪辑|抖音|"
+    r"混音|串燒|串烧|伴奏|純音樂|纯音乐|消音|教學|教学|反應|反应|ai翻唱|AI翻唱",
+    re.IGNORECASE,
+)
+_PERFORMANCE = re.compile(
+    r"(?<![a-z0-9])(cover|covered|live|acoustic|unplugged|session|piano|guitar|violin|"
+    r"歌ってみた|弾いてみた)(?![a-z0-9])|翻唱|翻自|現場|现场|演唱會|演唱会|彈唱|弹唱",
+    re.IGNORECASE,
+)
+_OFFICIAL_TITLE = re.compile(r"(?<![a-z])(official|mv|m/v|music video|audio)(?![a-z])|官方|公式", re.IGNORECASE)
+_OFFICIAL_CHANNEL = re.compile(r"(-\s*topic|vevo)\s*$|(?<![a-z])official(?![a-z])|(records?|entertainment)\s*$|官方|公式",
+                               re.IGNORECASE)
+
+
+def is_derivative(title: str) -> bool:
+    """Lyric/subtitle videos, speed edits, fan videos, remixes, karaoke… (an artist's own
+    "Official Lyric Video" is still the original)."""
+    t = _fold(title)
+    m = _DERIVATIVE.search(t)
+    if not m:
+        return False
+    lyric_only = all(re.fullmatch(r"lyrics?|lyric video|歌詞|歌词", x.group(0), re.IGNORECASE)
+                     for x in _DERIVATIVE.finditer(t))
+    return not (lyric_only and "official" in t)
+
+
+def is_performance(title: str) -> bool:
+    """A cover / live / acoustic performance (allowed, but ranked after originals)."""
+    return bool(_PERFORMANCE.search(_fold(title)))
+
+
+def originality(title: str, channel: str = "") -> float:
+    """-1 … 1: how likely an upload is the artist's original recording."""
+    if is_derivative(title):
+        return -1.0
+    score = 0.0
+    if is_performance(title):
+        score -= 0.5
+    chan = _fold(channel).strip()
+    if _OFFICIAL_CHANNEL.search(chan):
+        score += 0.5
+    if _OFFICIAL_TITLE.search(_fold(title)):
+        score += 0.3
+    who = artist_of(title, channel)
+    if who and chan and artist_key(who) == artist_key(clean_channel(channel)):
+        score += 0.2              # uploaded by the performer themselves
+    return max(-1.0, min(1.0, score))
+
+
+# ---- language --------------------------------------------------------------------
+
+_KANA = re.compile(r"[぀-ヿㇰ-ㇿ]")
+_HANGUL = re.compile(r"[가-힯ᄀ-ᇿ]")
+_HAN = re.compile(r"[㐀-䶿一-鿿]")
+_LATIN = re.compile(r"[A-Za-z]")
+LANGUAGES = {"ja": "Japanese", "zh": "Chinese", "ko": "Korean", "en": "English / Other"}
+
+
+def language_of(title: str, artist: str = "") -> str:
+    """Rough language of a song from the scripts in its title and artist: ja | zh | ko | en."""
+    text = f"{title} {artist}"
+    if _KANA.search(text):
+        return "ja"
+    if _HANGUL.search(text):
+        return "ko"
+    if _HAN.search(text):
+        return "zh"
+    return "en"

@@ -1,10 +1,13 @@
-"""Bottom transport bar: what's playing · controls + seek · auto-recommend + volume."""
+"""Bottom transport bar: what's playing · controls + seek · auto-recommend + volume.
+
+The volume slider has a second job: with the balance button on it becomes the
+Volume Balance slider (other apps ← middle → Aria)."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPoint, QRectF, Qt
 from PySide6.QtGui import QFontMetrics, QPainter, QPainterPath
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QToolTip, QVBoxLayout, QWidget
 
 from aria.core.models import Track, format_duration
 from aria.core.player import LOADING, PLAYING
@@ -72,11 +75,12 @@ class ElidedLabel(QLabel):
 
 
 class PlayerBar(QFrame):
-    def __init__(self, playback, library, parent=None):
+    def __init__(self, playback, library, balance=None, parent=None):
         super().__init__(parent)
         self.setObjectName("PlayerBar")
         self.pb = playback
         self.library = library
+        self.balance = balance
         self._length = 0.0
 
         grid = QGridLayout(self)
@@ -129,10 +133,13 @@ class PlayerBar(QFrame):
         self.mute_btn = IconButton("volume", "Mute", tone="secondary")
         self.volume = Slider(100, 70, step=5, name="Volume")
         self.volume.setFixedWidth(110)
+        self.balance_btn = IconButton("scale", "Volume Balance", checkable=True, tone="secondary")
+        self.balance_btn.setVisible(bool(balance and balance.available))
         right = QWidget()
         right.setFixedWidth(280)
         self.mini_btn = IconButton("mini", "Mini Player (Ctrl+Shift+M)", tone="secondary")
-        right.setLayout(hbox(None, self.auto_btn, self.mini_btn, 8, self.mute_btn, self.volume, spacing=4))
+        right.setLayout(hbox(None, self.auto_btn, self.mini_btn, 8, self.mute_btn, self.volume,
+                             self.balance_btn, spacing=4))
         grid.addWidget(right, 0, 2, 2, 1)
         grid.setColumnStretch(1, 1)
 
@@ -154,11 +161,16 @@ class PlayerBar(QFrame):
 
         self.seek.moved.connect(lambda v: self.time.setText(format_duration(v) if v else "0:00"))
         self.seek.committed.connect(pb.seek)
-        self.volume.set_value(pb.player.volume)
-        self.volume.moved.connect(lambda v: self._set_volume(v))
+        self.volume.moved.connect(self._on_slider)
         self.mute_btn.clicked.connect(self._toggle_mute)
         self._unmuted = pb.player.volume or 70
         self._update_volume_icon(pb.player.volume)
+        pb.volume_changed.connect(self._on_volume_changed)
+        self.balance_btn.toggled.connect(self._set_mode)
+        self._balance_mode = False
+        self.balance_btn.setChecked(bool(self.balance and self.balance.available)
+                                    and pb.settings["volume_mode"] == "balance")
+        self._set_mode(self.balance_btn.isChecked())
 
         self.save_btn.clicked.connect(self._toggle_saved)
 
@@ -173,15 +185,52 @@ class PlayerBar(QFrame):
         self.repeat_btn.setToolTip(REPEAT_TIP[mode])
         self.repeat_btn.setAccessibleName(REPEAT_TIP[mode])
 
+    # ---- volume / balance ----------------------------------------------------
+
+    def _set_mode(self, balance: bool) -> None:
+        """Volume ↔ Volume Balance on the same slider."""
+        self._balance_mode = balance
+        self.pb.settings["volume_mode"] = "balance" if balance else "volume"
+        self.volume.bipolar = balance
+        self.volume.default = 50 if balance else 70
+        if balance:
+            self.volume.set_value(50 + 50 * self.balance.value)
+            tip = "Balance: other apps ← → Aria · double-click to centre"
+        else:
+            self.volume.set_value(self.pb.player.volume)
+            tip = "Volume"
+        self.volume.setToolTip(tip)
+        self.volume.setAccessibleName("Volume Balance" if balance else "Volume")
+        self.volume.update()
+
+    def _on_slider(self, v: float) -> None:
+        if self._balance_mode:
+            self.balance.set_value((v - 50) / 50)
+            # Show what it does while dragging: the effect on other apps is otherwise invisible.
+            pos = self.volume.mapToGlobal(QPoint(int(self.volume.width() / 2), -6))
+            QToolTip.showText(pos, self.balance.describe(), self.volume)
+        else:
+            self._set_volume(v)
+
     def _set_volume(self, v: float) -> None:
         self.pb.set_volume(int(v))
         if v:
             self._unmuted = int(v)
         self._update_volume_icon(v)
 
+    def _on_volume_changed(self, v: int) -> None:
+        """Volume changed elsewhere (mini player, keyboard, console)."""
+        if v:
+            self._unmuted = v
+        self._update_volume_icon(v)
+        if not self._balance_mode:
+            self.volume.set_value(v)
+
+    def set_volume(self, v: float) -> None:
+        self._set_volume(max(0, min(100, v)))
+
     def _toggle_mute(self) -> None:
         target = 0 if self.pb.player.volume else (self._unmuted or 70)
-        self.volume.set_value(target)
         self._set_volume(target)
 
     def _update_volume_icon(self, v: float) -> None:

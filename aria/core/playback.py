@@ -1,4 +1,11 @@
-"""Queue, history, auto-recommendation and stream resolution around the Player."""
+"""Queue, history, auto-recommendation and stream resolution around the Player.
+
+Two temporary modes sit on top of the normal queue:
+- Album mode plays an album in its own order, gapless, with no recommendations
+  slipped in; afterwards everything is as it was.
+- A listening timer plays a set of songs chosen to fill a time budget and stops
+  when the last one ends.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +17,10 @@ import time
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from aria import paths, providers
-from aria.core import tasks
+from aria.core import tasks, timefit
 from aria.core.models import LOCAL, Stream, Track
 from aria.core.player import IDLE, LOADING, PAUSED, PLAYING, Player
-from aria.core.recommend import Recommender, pick_related
+from aria.core.recommend import Recommender, assemble, pick_related
 from aria.core.storage import DebouncedSaver, read_json
 
 log = logging.getLogger(__name__)
@@ -25,6 +32,7 @@ SOFT_RESUME_AFTER = 90        # seconds paused before resuming softly
 SOFT_RESUME_RAMP = 3.0        # seconds to come back to full volume
 SOURCE_SWITCH_FADE = 0.8
 QUEUE_SEEDS = 3               # queue songs (beyond the current one) that steer recommendations
+GAPLESS_LEAD = 8.0            # seconds before the end to buffer the next song when not cross-fading
 
 
 class Playback(QObject):
@@ -37,6 +45,9 @@ class Playback(QObject):
     position_changed = Signal(float, float)
     notice = Signal(str, str)                 # kind, text  → toast
     source_changed = Signal(bool)             # True = playing the downloaded file
+    volume_changed = Signal(int)
+    file_deleted = Signal(str)                # key whose downloaded file was deleted later
+    mode_changed = Signal()                   # album mode / listening timer started or ended
 
     def __init__(self, settings, legacy_queue: list[Track] | None = None):
         super().__init__()
@@ -63,6 +74,19 @@ class Playback(QObject):
         self._pause_on_start = False
         self._warming: set[str] = set()
         self.playing_local = False
+        self.library = None                       # set by the app: lets recommendations follow your taste
+        self.listening = None                     # set by the app: play stats (what's familiar)
+        self.album: dict | None = None            # {"title", "keys"} while an album plays in order
+        self.timer: dict | None = None            # {"keys", "total"} while a listening timer runs
+        self._armed: Track | None = None          # song buffered for a gapless start
+        self._armed_local = False
+        self._pools: list | None = None           # last radios, so the Discovery dial re-ranks offline
+        self._pool_seeds: list[Track] = []
+        self._rank = tasks.Latest()
+        self._pending_delete: dict[str, str] = {}   # key → file to delete once it's no longer playing
+        self._delete_timer = QTimer(self)
+        self._delete_timer.setInterval(2000)
+        self._delete_timer.timeout.connect(self._try_deletes)
 
         self.player.state_changed.connect(self._on_player_state)
         self.player.near_end.connect(self._on_near_end)
@@ -84,12 +108,24 @@ class Playback(QObject):
         self._queue_recs_timer.setInterval(2500)
         self._queue_recs_timer.timeout.connect(self.refresh_recommendations)
         self.queue_changed.connect(self._queue_recs_timer.start)
+        self.queue_changed.connect(self._check_armed)
+        self.player.advanced.connect(self._on_advanced)
         self.apply_settings()
 
     def apply_settings(self) -> None:
         """Re-read playback preferences (called when the settings page changes them)."""
         secs = float(self.settings["crossfade_secs"])
-        self.player.lead = secs + 0.6 if self.settings["crossfade"] else 0.0
+        self.player.lead = secs + 0.6 if self.crossfading else GAPLESS_LEAD
+
+    @property
+    def crossfading(self) -> bool:
+        """Cross-fade between songs (albums always play gapless instead)."""
+        return bool(self.settings["crossfade"]) and self.album is None
+
+    @property
+    def autoplaying(self) -> bool:
+        """Recommendations may be added right now (not inside an album or a timed set)."""
+        return self.autoplay and self.album is None and self.timer is None
 
     # ---- state ---------------------------------------------------------------
 
@@ -147,12 +183,18 @@ class Playback(QObject):
         """Manual skip (also used when a track ends)."""
         if self.current:
             self._push_history(self.current)
-            if self.repeat == "all":
+            if self.repeat == "all" and self.album is None:
                 self.queue.append(self.current)
+        if self._album_over_after(self.current):
+            self.end_album()
+            if not self.queue:              # the album was the whole plan: stop quietly
+                self._set_current(None)
+                self.stop()
+                return
         self._advance()
 
     def _advance(self) -> None:
-        if not self.queue and self.autoplay:
+        if not self.queue and self.autoplaying:
             self._autoplay_fill()
             if not self.queue and self._autoplay_waiting:
                 # Recommendations are on their way; refresh_recommendations resumes.
@@ -202,8 +244,11 @@ class Playback(QObject):
         self.player.seek(seconds)
 
     def set_volume(self, volume: int) -> None:
+        before = self.player.volume
         self.player.set_volume(volume)
         self.settings["volume"] = self.player.volume
+        if self.player.volume != before:
+            self.volume_changed.emit(self.player.volume)
 
     def set_autoplay(self, on: bool) -> None:
         self.autoplay = on
@@ -221,6 +266,7 @@ class Playback(QObject):
     def enqueue(self, tracks: list[Track], play_next: bool = False) -> None:
         if not tracks:
             return
+        was_empty = not self.queue
         tracks = [t.copy() for t in tracks]
         if play_next:
             self.queue[0:0] = tracks
@@ -228,7 +274,8 @@ class Playback(QObject):
             self.queue.extend(tracks)
         self.queue_changed.emit()
         self.save()
-        if not self.current and self.player.state == IDLE and not self._resolving:
+        # Nothing playing and nothing was waiting: start. (A restored queue only grows.)
+        if was_empty and not self.current and self.player.state == IDLE and not self._resolving:
             self.next()
         else:
             self._prefetch()
@@ -255,14 +302,159 @@ class Playback(QObject):
             self.save()
 
     def shuffle(self) -> None:
+        self.end_album()                    # shuffling an album means leaving album order
         random.shuffle(self.queue)
         self.queue_changed.emit()
         self.save()
 
     def clear(self) -> None:
         self.queue.clear()
+        self.end_album()
+        self.cancel_timer()
         self.queue_changed.emit()
         self.save()
+
+    # ---- album mode ----------------------------------------------------------
+
+    def play_album(self, tracks: list[Track], title: str, start: int = 0) -> None:
+        """Play an album from ``start`` in its own order: gapless, nothing slipped in between.
+        Whatever was queued waits until the album is over."""
+        tracks = [t.copy() for t in tracks[start:]]
+        if not tracks:
+            return
+        self.cancel_timer()
+        if self.current:
+            self._push_history(self.current)
+        self.album = {"title": title, "keys": [t.key for t in tracks]}
+        self.queue[0:0] = tracks[1:]
+        self.queue_changed.emit()
+        self.apply_settings()
+        self.mode_changed.emit()
+        self.save()
+        self._play(tracks[0])
+
+    def end_album(self) -> None:
+        if self.album is not None:
+            self.album = None
+            self.apply_settings()
+            self.mode_changed.emit()
+
+    def _album_over_after(self, track: Track | None) -> bool:
+        """True when ``track`` is the album's last song (or playback has left the album)."""
+        if self.album is None or track is None:
+            return False
+        keys = self.album["keys"]
+        return track.key == keys[-1] or track.key not in keys
+
+    # ---- listening timer -----------------------------------------------------
+
+    def start_timer(self, tracks: list[Track], seconds: float, top_up: bool = False) -> None:
+        """Play exactly ``tracks`` (chosen to fill ``seconds``) and stop when the last one ends.
+        Songs that were queued wait behind them. With ``top_up``, a set that falls short is
+        completed with recommendations (fetched first if there are none yet)."""
+        if not tracks:
+            return
+        self.end_album()
+        chosen = [t.copy() for t in tracks]
+        keys = {t.key for t in chosen}
+        if self.current:
+            self._push_history(self.current)
+        self.queue = chosen[1:] + [t for t in self.queue if t.key not in keys]
+        self.timer = {"keys": [t.key for t in chosen], "total": seconds, "top_up": top_up}
+        self.queue_changed.emit()
+        self.mode_changed.emit()
+        self.save()
+        self._play(chosen[0])
+        if top_up:
+            self._top_up_timer()
+
+    def _timer_overlap(self) -> float:
+        return float(self.settings["crossfade_secs"]) if self.crossfading else 0.0
+
+    def _top_up_timer(self) -> None:
+        """Fill what the queue couldn't with recommendations, placed after the timed songs."""
+        t = self.timer
+        if t is None or not t.get("top_up"):
+            return
+        ov = self._timer_overlap()
+        timed = [x for x in ([self.current] if self.current else []) + self.queue if x.key in t["keys"]]
+        gap = t["total"] - timefit.playing_time(timed, ov)
+        if gap < 60:
+            t["top_up"] = False
+            return
+        pool = [x for x in pick_related(self.recommendations, self._exclusions(), 40) if x.duration]
+        extra = timefit.fit(pool, gap, ov)
+        if not extra:
+            if not self._recs_busy and not t.get("asked"):
+                t["asked"] = True                 # one fetch; the timer stays short if that doesn't help
+                self.refresh_recommendations(force=True)
+            return
+        t["top_up"] = False
+        taken = {x.id for x in extra}
+        self.recommendations = [x for x in self.recommendations if x.id not in taken]
+        self.recommendations_changed.emit()
+        at = sum(1 for x in self.queue if x.key in t["keys"])
+        self.queue[at:at] = [x.copy() for x in extra]
+        t["keys"] += [x.key for x in extra]
+        self.queue_changed.emit()
+        self.mode_changed.emit()
+        self.notice.emit("info", f"Added {len(extra)} recommended song{'s' if len(extra) != 1 else ''} to fill the time")
+        self.save()
+
+    def cancel_timer(self) -> None:
+        if self.timer is not None:
+            self.timer = None
+            self.mode_changed.emit()
+
+    def timer_remaining(self) -> float:
+        """Seconds of music left in the timed set (it pauses with the music)."""
+        if self.timer is None:
+            return 0.0
+        keys = self.timer["keys"]
+        left = 0.0
+        songs = 0
+        if self.current and self.current.key in keys:
+            length = self.player.length() or self.current.duration
+            left += max(0.0, length - self.player.position())
+            songs += 1
+        for t in self.queue:
+            if t.key in keys:
+                left += t.duration
+                songs += 1
+        if self.crossfading and songs > 1:
+            left -= float(self.settings["crossfade_secs"]) * (songs - 1)
+        return max(0.0, left)
+
+    def _is_timer_end(self, track: Track | None) -> bool:
+        """The timed set is over once this song ends (no more of its songs are waiting)."""
+        if self.timer is None or track is None:
+            return False
+        keys = set(self.timer["keys"])
+        return track.key in keys and not any(t.key in keys for t in self.queue)
+
+    # ---- discovery -----------------------------------------------------------
+
+    def set_discovery(self, value: float) -> None:
+        """0 = familiar … 1 = unexpected. Re-ranks the radios already fetched (no network)."""
+        self.settings["discovery"] = round(max(0.0, min(1.0, value)), 2)
+        if not self._pools:
+            return
+        ticket = self._rank.next()
+        pools, seeds, exclude, taste = self._pools, self._pool_seeds, self._exclusions(), self._taste()
+
+        def done(result: list[Track]):
+            if self._rank.is_current(ticket):
+                self.recommendations = result
+                self.recommendations_changed.emit()
+
+        tasks.run(lambda: assemble(pools, seeds, exclude, 15, **taste), done,
+                  lambda e: log.warning("Re-ranking failed: %s", e))
+
+    def _taste(self) -> dict:
+        return {"history": list(self.history[-200:]),
+                "library": list(self.library.tracks) if self.library is not None else [],
+                "played": self.listening.played_keys() if self.listening is not None else set(),
+                "discovery": float(self.settings["discovery"])}
 
     def clear_history(self) -> None:
         self.history.clear()
@@ -301,12 +493,17 @@ class Playback(QObject):
         exclude = self._exclusions()
         self._set_recs_busy(True)
 
-        def done(result: list[Track]):
+        def done(found):
+            pools, result = found
             if not self._recs.is_current(ticket):
                 return
+            self._rank.next()                 # a dial re-rank still in flight is now stale
+            self._pools, self._pool_seeds = pools, seeds
             self._set_recs_busy(False)
             self.recommendations = result
             self.recommendations_changed.emit()
+            if self.timer is not None and self.timer.get("top_up"):
+                self._top_up_timer()
             if self._autoplay_waiting:
                 self._autoplay_waiting = False
                 self._resume_after_recommendations()
@@ -319,7 +516,13 @@ class Playback(QObject):
                     self._autoplay_waiting = False
                     self._resume_after_recommendations()
 
-        tasks.run(lambda: self.recommender.recommend(seeds, exclude, 15), done, failed)
+        taste = self._taste()
+
+        def work():
+            pools = self.recommender.fetch(seeds, taste["history"], taste["library"])
+            return pools, assemble(pools, seeds, exclude, 15, **taste)
+
+        tasks.run(work, done, failed)
         return True
 
     def _set_recs_busy(self, busy: bool) -> None:
@@ -374,6 +577,11 @@ class Playback(QObject):
 
     def _set_current(self, track: Track | None) -> None:
         self.current = track
+        if self.album is not None and (track is None or track.key not in self.album["keys"]):
+            self.end_album()                # playing something else leaves album mode
+        if self.timer is not None and (track is None or track.key not in self.timer["keys"]):
+            self.cancel_timer()
+        self._armed = None
         self.current_changed.emit(track)
         self.save()
         if track:
@@ -448,21 +656,34 @@ class Playback(QObject):
 
     # ---- seamless transitions ------------------------------------------------
 
-    def _on_near_end(self, remaining: float) -> None:
-        """Cross-fade into what comes next (or into the same song when repeating one)."""
-        if not self.settings["crossfade"] or not self.current:
-            return
+    def _next_up(self) -> Track | None:
+        """What follows the current song when it ends naturally."""
+        if not self.current:
+            return None
         if self.repeat == "one":
-            nxt = self.current
-        else:
-            if not self.queue and self.autoplay:
-                self._autoplay_fill()
-            if not self.queue:
-                return
-            nxt = self.queue[0]
+            return self.current
+        if self._is_timer_end(self.current):
+            return None                     # time's up after this one
+        if self._album_over_after(self.current):
+            return None                     # the album ends in silence
+        if not self.queue and self.autoplaying:
+            self._autoplay_fill()
+        return self.queue[0] if self.queue else None
+
+    def _on_near_end(self, remaining: float) -> None:
+        """Cross-fade, or buffer for a gapless start, into what comes next
+        (or into the same song when repeating one)."""
+        nxt = self._next_up()
+        if nxt is None:
+            return
         stream = providers.cached_stream(nxt)
         if stream is None:
             self.warm(nxt)              # not ready: fall back to a normal change at the end
+            return
+        if not self.crossfading:
+            self._armed = nxt
+            self._armed_local = bool(nxt.local_path) and stream.url == nxt.local_path
+            self.player.queue_next(stream)
             return
         duration = max(1.0, min(float(self.settings["crossfade_secs"]), remaining - 0.3))
         if nxt is not self.current:
@@ -475,6 +696,34 @@ class Playback(QObject):
         self._retried_key = None
         self.player.crossfade(stream, duration)
         self._set_playing_local(bool(nxt.local_path) and stream.url == nxt.local_path)
+
+    def _on_advanced(self) -> None:
+        """The buffered song took over (gapless): the bookkeeping of a normal change."""
+        nxt, cur, local = self._armed, self.current, self._armed_local
+        self._armed = None
+        if nxt is None or cur is None:
+            return
+        if nxt is not cur:
+            self._push_history(cur)
+            if self.repeat == "all" and self.album is None:
+                self.queue.append(cur)
+            if nxt in self.queue:
+                self.queue.remove(nxt)
+            self.queue_changed.emit()
+            self._set_current(nxt)
+        self._retried_key = None
+        self._set_playing_local(local)
+
+    def _check_armed(self) -> None:
+        """The queue changed after the next song was buffered: buffer the right one instead."""
+        if self._armed is None or not self.player.has_queued:
+            return
+        if self._next_up() is not self._armed:
+            self._armed = None
+            self.player.cancel_queued()
+            remaining = self.player.length() - self.player.position()
+            if remaining > 1.5:
+                self._on_near_end(remaining)
 
     def switch_source(self, local: bool) -> None:
         """Hop between the online stream and the downloaded file without losing the place."""
@@ -500,6 +749,31 @@ class Playback(QObject):
         else:
             tasks.run(lambda: providers.remote_stream(track), go,
                       lambda e: log.error("Couldn’t switch to streaming: %s", e))
+
+    def delete_after_playback(self, key: str, path: str) -> None:
+        """Delete a downloaded file that's playing right now as soon as it stops being used."""
+        self._pending_delete[key] = path
+        self._delete_timer.start()
+
+    def deleting_later(self, key: str) -> bool:
+        return key in self._pending_delete
+
+    def _try_deletes(self) -> None:
+        for key, path in list(self._pending_delete.items()):
+            if self.current and self.current.key == key:
+                continue                         # still playing (or paused on it)
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                continue                         # still open (e.g. fading out): try again shortly
+            del self._pending_delete[key]
+            self.forget_local(key)
+            self.file_deleted.emit(key)
+            log.info("Deleted the downloaded file of a removed song: %s", os.path.basename(path))
+        if not self._pending_delete:
+            self._delete_timer.stop()
 
     def forget_local(self, key: str) -> None:
         """A downloaded file was deleted: copies of that track go back to streaming."""
@@ -538,6 +812,13 @@ class Playback(QObject):
         if self.repeat == "one" and self.current:
             self._start(self.current)       # cached stream → restarts instantly
             return
+        if self._is_timer_end(self.current):
+            self.cancel_timer()
+            self._push_history(self.current)
+            self._set_current(None)
+            self.stop()
+            self.notice.emit("info", "Time’s up")
+            return
         self.next()
 
     def _on_failed(self) -> None:
@@ -555,3 +836,6 @@ class Playback(QObject):
     def shutdown(self) -> None:
         self._saver.flush()
         self.player.release()
+        if self._pending_delete:                 # nothing plays any more: delete what was waiting
+            self.current = None
+            self._try_deletes()

@@ -61,15 +61,17 @@ class TrackActions:
         path = track.local_path or (saved.local_path if saved else "")
         return path if path and track.source != LOCAL and os.path.exists(path) else ""
 
-    def delete_downloads(self, tracks: list[Track]) -> tuple[int, int]:
-        """Delete downloaded files; returns (deleted, kept). The file playing right now is kept."""
-        deleted = kept = 0
+    def delete_downloads(self, tracks: list[Track]) -> tuple[int, int, int]:
+        """Delete downloaded files; returns (deleted, kept, later). The file playing right now is
+        deleted once the song is over."""
+        deleted = kept = later = 0
         for t in tracks:
             path = self.local_path_of(t)
             if not path:
                 continue
-            if self.pb.current and self.pb.current.key == t.key and self.pb.playing_local:
-                kept += 1
+            if self.pb.current and self.pb.current.key == t.key:
+                self.pb.delete_after_playback(t.key, path)
+                later += 1
                 continue
             try:
                 os.remove(path)
@@ -80,7 +82,7 @@ class TrackActions:
             self.library.set_local(t.key, "")
             self.playlists.set_local(t.key, "")
             self.pb.forget_local(t.key)
-        return deleted, kept
+        return deleted, kept, later
 
     def remove_with_files(self, parent: QWidget, tracks: list[Track], title: str, detail: str,
                           remove, confirm_always: bool = True) -> None:
@@ -98,10 +100,15 @@ class TrackActions:
             return
         remove()
         if also:
-            deleted, kept = self.delete_downloads(files)
-            self.toast("success" if not kept else "warning",
-                       f"Removed · {deleted} file{'s' if deleted != 1 else ''} deleted"
-                       + (f" · {kept} in use, kept" if kept else ""))
+            deleted, kept, later = self.delete_downloads(files)
+            parts = ["Removed"]
+            if deleted:
+                parts.append(f"{deleted} file{'s' if deleted != 1 else ''} deleted")
+            if later:
+                parts.append("the playing file goes when the song ends")
+            if kept:
+                parts.append(f"{kept} couldn’t be deleted")
+            self.toast("warning" if kept else "success", " · ".join(parts))
         else:
             self.toast("success", "Removed")
 
@@ -120,6 +127,12 @@ class TrackActions:
         self.pb.play_now(tracks[0])
         if len(tracks) > 1:
             self.pb.enqueue(tracks[1:], play_next=True)
+
+    def play_album(self, tracks: list[Track], title: str, start: int = 0) -> None:
+        """Album mode: in order, gapless, no recommendations until it's over."""
+        if tracks:
+            self.pb.play_album(tracks, title, start)
+            self.toast("info", f"Playing “{title}” as an album")
 
     def play_next(self, tracks: list[Track]) -> None:
         if tracks:

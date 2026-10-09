@@ -1,4 +1,7 @@
-"""Digital Record Shelf: albums and playlists arranged by hand, opened like a record sleeve."""
+"""Digital Record Shelf: albums and playlists arranged by hand, opened like a record sleeve.
+
+Two displays: Cover (sleeves face the room) and Spine (cases packed side by
+side; hovering pulls one half out to show its cover)."""
 
 from __future__ import annotations
 
@@ -22,7 +25,9 @@ from aria.ui.theme import font, theme
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets import tint as tint_mod
 from aria.ui.widgets.controls import Button, hbox, label
+from aria.ui.widgets import rack as rack_mod
 from aria.ui.widgets.dialogs import confirm
+from aria.ui.widgets.rack import RackItem, RackPanel, RackView
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import RowAction, TrackListView, paint_empty, reserve_scrollbar
 
@@ -119,20 +124,26 @@ def draw_cover(p: QPainter, rect: QRectF, album: Album, radius: float = 4, dpr: 
 
 
 def draw_vinyl(p: QPainter, center, r: float, label_color: QColor) -> None:
-    """A black record: grooves, a sheen, and a label in the album's tint."""
+    """A black record: grooves, a sheen, and a label in the album's tint.
+    On a dark window the record is lifted a little and gets a lit rim so it stays readable."""
+    dark = theme.dark
     p.save()
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor("#111113"))
+    p.setBrush(QColor("#2a2a2e") if dark else QColor("#111113"))
     p.drawEllipse(center, r, r)
-    pen = QPen(QColor(255, 255, 255, 14))
+    pen = QPen(QColor(255, 255, 255, 26 if dark else 14))
     pen.setWidthF(0.8)
     p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)
     for k in range(6, 18):
         rr = r * k / 18
         p.drawEllipse(center, rr, rr)
+    rim = QPen(QColor(255, 255, 255, 70 if dark else 30))
+    rim.setWidthF(1.2)
+    p.setPen(rim)
+    p.drawEllipse(center, r - 0.6, r - 0.6)
     sheen = QRadialGradient(center.x() - r * 0.3, center.y() - r * 0.4, r)
-    sheen.setColorAt(0, QColor(255, 255, 255, 30))
+    sheen.setColorAt(0, QColor(255, 255, 255, 52 if dark else 30))
     sheen.setColorAt(1, QColor(255, 255, 255, 0))
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(sheen)
@@ -225,7 +236,10 @@ class ShelfView(QWidget):
     def _on_slide(self, v) -> None:
         self._slide = float(v)
         if self._hover >= 0:          # only the hovered sleeve moves
-            self.update(self._rect(self._hover).adjusted(-8, -8, 48, 8).toAlignedRect())
+            self.update(self._dirty(self._hover))
+
+    def _dirty(self, i: int):
+        return self._rect(i).adjusted(-10, -10, 48, PLANK_H + TEXT_H + 12).toAlignedRect()
 
     def mouseMoveEvent(self, e):
         pos = e.position().toPoint()
@@ -243,11 +257,14 @@ class ShelfView(QWidget):
             self._hover = hover
             self.setCursor(Qt.CursorShape.PointingHandCursor if hover >= 0 else Qt.CursorShape.ArrowCursor)
             if old >= 0:
-                self.update(self._rect(old).adjusted(-8, -8, 48, 8).toAlignedRect())
+                self.update(self._dirty(old))
             self._anim.stop()
-            self._anim.setStartValue(0.0)
-            self._anim.setEndValue(1.0)
-            self._anim.start()
+            if rack_mod.reduce_motion:
+                self._on_slide(1.0)
+            else:
+                self._anim.setStartValue(0.0)
+                self._anim.setEndValue(1.0)
+                self._anim.start()
 
     def leaveEvent(self, e):
         self._hover = -1
@@ -308,18 +325,26 @@ class ShelfView(QWidget):
             if i == self._drag:
                 continue
             base = self._rect(i)
-            if not base.adjusted(-8, -8, 48, TEXT_H + PLANK_H + 12).intersects(dirty):
+            if not base.adjusted(-10, -10, 48, TEXT_H + PLANK_H + 12).intersects(dirty):
                 continue
             r = base
-            if i == self._hover and self._drag < 0:
+            hovered = i == self._hover and self._drag < 0
+            if hovered:
+                # The sleeve lifts a little and the record peeks out — all inside the gap, nothing overlaps.
                 slide = self._slide * 30
-                draw_vinyl(p, r.center() + QPoint(int(slide), 0) - QPoint(0, int(2 * self._slide)),
+                draw_vinyl(p, r.center() + QPoint(int(slide), 0) - QPoint(0, int(3 * self._slide)),
                            COVER * 0.47, label_color(a))
-                r = r.translated(0, -2 * self._slide)
+                r = r.translated(0, -3 * self._slide)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, 30 if not theme.dark else 70))
-            p.drawRoundedRect(r.translated(0, 2), 4, 4)
+            lift = self._slide if hovered else 0.0
+            p.setBrush(QColor(0, 0, 0, int((70 if theme.dark else 30) + 50 * lift)))
+            p.drawRoundedRect(r.translated(0, 2 + 3 * lift), 4, 4)
             draw_cover(p, r, a, dpr=dpr)
+            if hovered:
+                ring = QColor(255, 255, 255, int(90 * lift)) if theme.dark else QColor(0, 0, 0, int(40 * lift))
+                p.setPen(ring)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
             text = QRectF(r.left(), base.bottom() + PLANK_H + 8, COVER, 20)
             p.setFont(font("callout", 600))
             p.setPen(theme.color("label"))
@@ -421,12 +446,12 @@ class AlbumView(QWidget):
             RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.list.tracks()[r]])),
             RowAction("heart", "Save", lambda r: actions.toggle_saved(self.list.tracks()[r]), saved),
         ]
-        self.list.activated_row.connect(lambda r: actions.play(self.list.tracks()[r:]))
+        self.list.activated_row.connect(self._play_from)
         self.list.context_requested.connect(
             lambda rows, pos: actions.menu(self, [self.list.tracks()[i] for i in rows]).exec(pos))
         lay.addWidget(self.list, 1)
 
-        self.play_btn.clicked.connect(lambda: self.album and actions.play(tracks_of(self.album)))
+        self.play_btn.clicked.connect(lambda: self._play_from(0))
         self.shuffle_btn.clicked.connect(self._shuffle)
         self.queue_btn.clicked.connect(lambda: self.album and actions.enqueue(tracks_of(self.album)))
         self.open_btn.clicked.connect(lambda: self.album and QDesktopServices.openUrl(QUrl(self.album.url)))
@@ -451,6 +476,17 @@ class AlbumView(QWidget):
     def refresh(self) -> None:
         if self.album:
             self.show_album(self.album)
+
+    def _play_from(self, row: int) -> None:
+        """Albums play as albums: in order, gapless, nothing slipped in between."""
+        a = self.album
+        if not a:
+            return
+        tracks = tracks_of(a)
+        if a.kind == "album" and not a.playlist_id:
+            self.actions.play_album(tracks, a.title, row)
+        else:
+            self.actions.play(tracks[row:])
 
     def _shuffle(self) -> None:
         if self.album:
@@ -581,6 +617,9 @@ class ShelfPage(TintedPage):
         self.header.addWidget(self.add_btn)
         self.count = label("", "Caption")
         self.header.addWidget(self.count)
+        self.display = Segmented(["Cover", "Spine"], compact=True)
+        self.display.setToolTip("Covers facing out, or spines side by side")
+        self.header.addWidget(self.display)
 
         self.stack = QStackedWidget()
         scroll = QScrollArea()
@@ -592,22 +631,60 @@ class ShelfPage(TintedPage):
         self.view = ShelfView(shelf)
         scroll.setWidget(self.view)
         self.detail = AlbumView(shelf, actions)
+        self.spines = RackView(spine_w=40, case_h=190, reveal=0.55)
+        self.spine_panel = RackPanel(self.spines, ("disc", "Your shelf is empty",
+                                                   "Use “Add…” to put an album or playlist here."))
         self.stack.addWidget(scroll)
         self.stack.addWidget(self.detail)
+        self.stack.addWidget(self.spine_panel)
         self.root.addWidget(self.stack, 1)
+        self.spines.clicked_item.connect(lambda i: self.open_album(self.shelf.albums[i].id))
+        self.spines.activated.connect(lambda i: self.open_album(self.shelf.albums[i].id))
+        self.spines.context.connect(lambda i, pos: self._menu(self.shelf.albums[i].id, pos))
+        thumbs_mod.instance().ready.connect(lambda _k: self.spines.isVisible() and self.spines.refresh_covers())
+        self._view = 2 if settings["shelf_view"] == "spine" else 0
+        self.display.set_index(1 if self._view == 2 else 0)
+        self.display.changed.connect(self._set_display)
+        self.stack.setCurrentIndex(self._view)
 
         self.view.open_album.connect(self.open_album)
         self.view.context.connect(self._menu)
         self.detail.back.connect(self.close_album)
         shelf.changed.connect(self._update_count)
+        shelf.changed.connect(lambda: self._view == 2 and self._sync_spines())
         playlists.changed.connect(lambda: shelf.sync_playlists(playlists))
         playlists.playlist_changed.connect(self._playlist_edited)
         thumbs_mod.instance().ready.connect(lambda _k: self._update_tint())
         shelf.sync_playlists(playlists)
         self._update_count()
+        if self._view == 2:
+            self._sync_spines()
+
+    # ---- displays ------------------------------------------------------------
+
+    def _set_display(self, i: int) -> None:
+        self._view = 2 if i == 1 else 0
+        self.settings["shelf_view"] = "spine" if i == 1 else "cover"
+        if self._view == 2:
+            self._sync_spines()
+        if self.stack.currentIndex() != 1:          # leave an open album open
+            self.stack.setCurrentIndex(self._view)
+
+    def _sync_spines(self) -> None:
+        dpr = self.devicePixelRatioF()
+        items = []
+        for a in self.shelf.albums:
+            kind = "playlist" if a.kind == "playlist" else "album"
+            items.append(RackItem(key=a.id, title=a.title, subtitle=a.artist or subtitle(a), kind=kind,
+                                  tooltip=" — ".join(x for x in (a.title, subtitle(a)) if x),
+                                  cover=(lambda a=a: _tile(a, 190, 0.0, dpr))))
+        keep = self.spines.items[self.spines.selected].key if 0 <= self.spines.selected < len(self.spines.items) else None
+        self.spines.set_items(items, keep)
 
     def _playlist_edited(self, pid: str) -> None:
         self.view.update()
+        if self._view == 2:
+            self._sync_spines()
         if self.stack.currentIndex() == 1 and self.detail.album and self.detail.album.playlist_id == pid:
             self.detail.refresh()
 
@@ -623,13 +700,15 @@ class ShelfPage(TintedPage):
         self.stack.setCurrentIndex(1)
         self.add_btn.hide()
         self.count.hide()
+        self.display.hide()
         self._update_tint()
         self.detail.setFocus()
 
     def close_album(self) -> None:
-        self.stack.setCurrentIndex(0)
+        self.stack.setCurrentIndex(self._view)
         self.add_btn.show()
         self.count.show()
+        self.display.show()
         self.set_hue(None)
 
     def _update_tint(self) -> None:
@@ -666,5 +745,5 @@ class ShelfPage(TintedPage):
             self.toast("success" if added else "info", f"Added “{p.name}” to the shelf" if added else "Already on the shelf")
 
     def on_shown(self) -> None:
-        if self.stack.currentIndex() == 0:
+        if self.stack.currentIndex() != 1:
             self.set_hue(None)

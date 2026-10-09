@@ -1,7 +1,9 @@
 """libVLC playback: two decks behind one engine.
 
 Two decks make cross-fades, seamless repeats and stream → local switches
-possible: the next thing starts on the idle deck and the decks swap.
+possible: the next thing starts on the idle deck and the decks swap. Without a
+cross-fade the next song waits, buffered and paused, on the idle deck and
+starts the moment the current one ends (gapless).
 VLC events arrive on VLC's own thread and are re-emitted as queued Qt signals,
 so no VLC call ever runs inside a VLC callback.
 """
@@ -61,7 +63,8 @@ class Deck(QObject):
             events.event_attach(etype, lambda _e, n=name: self._vlc_event.emit(n))
         self._vlc_event.connect(self._on_event)
 
-    def load(self, stream: Stream, start: float = 0) -> None:
+    def load(self, stream: Stream, start: float = 0, paused: bool = False) -> None:
+        """``paused``: open and buffer, then wait at the start (for gapless hand-overs)."""
         media = self._instance.media_new(stream.url)
         for key, value in stream.headers.items():
             k = key.lower()
@@ -71,6 +74,8 @@ class Deck(QObject):
                 media.add_option(f":http-user-agent={value}")
         if start > 0.5:
             media.add_option(f":start-time={start:.2f}")
+        if paused:
+            media.add_option(":start-paused")
         self.mp.set_media(media)
         media.release()
         self._set(LOADING)
@@ -126,6 +131,7 @@ class Player(QObject):
     ended = Signal()
     failed = Signal()
     near_end = Signal(float)                  # remaining seconds, once per track
+    advanced = Signal()                       # a queued (gapless) stream took over
 
     def __init__(self, volume: int = 70):
         super().__init__()
@@ -135,11 +141,14 @@ class Player(QObject):
         self._volume = volume
         self._gain = [1.0, 0.0]               # per-deck fade gain
         self._soft = 1.0                      # soft-resume multiplier (active deck)
+        self._balance = 1.0                   # Volume Balance: Aria's share of the mix
+        self._queued: Deck | None = None      # next song waiting (paused) for a gapless start
         self._fades: list[_Fade] = []
         self.lead = 0.0                       # seconds before the end to emit near_end
         self._cued = False
         self._pending_xfade: tuple[Deck, float] | None = None
         self._fade_out_deck: Deck | None = None
+        self._pending_start: Deck | None = None
 
         for d in self.decks:
             d.state_changed.connect(self._on_deck_state)
@@ -179,6 +188,8 @@ class Player(QObject):
         """Play on the active deck, silencing everything else."""
         self._fades.clear()
         self._pending_xfade = None
+        self._queued = None
+        self._pending_start = None
         other = self.decks[1 - self._active]
         other.stop()
         self._gain[1 - self._active] = 0.0
@@ -196,6 +207,7 @@ class Player(QObject):
         if old.state != PLAYING or duration <= 0:
             self.load(stream, start)
             return
+        self._queued = None
         self._fades = [f for f in self._fades if f.deck is not old]
         self._active = 1 - self._active
         new = self.deck
@@ -206,6 +218,27 @@ class Player(QObject):
         self._pending_xfade = (new, duration)
         self._fade_out_deck = old
         new.load(stream, start)
+
+    def queue_next(self, stream: Stream) -> None:
+        """Buffer ``stream`` paused on the idle deck; it starts the instant the current song ends."""
+        if self.state not in (PLAYING, PAUSED):
+            return
+        i = 1 - self._active
+        deck = self.decks[i]
+        self._fades = [f for f in self._fades if f.deck != i]
+        deck.stop()
+        self._gain[i] = 1.0
+        self._queued = deck
+        deck.load(stream, paused=True)
+
+    def cancel_queued(self) -> None:
+        if self._queued is not None:
+            self._queued.stop()
+            self._queued = None
+
+    @property
+    def has_queued(self) -> bool:
+        return self._queued is not None
 
     def toggle(self) -> None:
         if self.state == PLAYING:
@@ -247,6 +280,8 @@ class Player(QObject):
     def stop(self) -> None:
         self._fades.clear()
         self._pending_xfade = None
+        self._queued = None
+        self._pending_start = None
         for d in self.decks:
             d.stop()
         self._ticker.stop()
@@ -265,6 +300,11 @@ class Player(QObject):
         self._volume = max(0, min(100, int(volume)))
         self._apply()
 
+    def set_balance_gain(self, gain: float) -> None:
+        """Aria's own share when Volume Balance favours other apps (1 = untouched)."""
+        self._balance = max(0.0, min(1.0, gain))
+        self._apply()
+
     def release(self) -> None:
         self._ticker.stop()
         self._fader.stop()
@@ -277,7 +317,7 @@ class Player(QObject):
 
     def _apply(self) -> None:
         for i, d in enumerate(self.decks):
-            g = self._gain[i] * (self._soft if i == self._active else 1.0)
+            g = self._gain[i] * (self._soft if i == self._active else 1.0) * self._balance
             d.set_volume(round(self._volume * g))
 
     def _step_fades(self) -> None:
@@ -305,6 +345,10 @@ class Player(QObject):
     # ---- deck events -------------------------------------------------------------
 
     def _on_deck_state(self, deck: Deck, state: str) -> None:
+        if deck is self._pending_start and state == PAUSED:
+            self._pending_start = None
+            deck.mp.set_pause(0)
+            return
         if self._pending_xfade and deck is self._pending_xfade[0] and state == PLAYING:
             _new, dur = self._pending_xfade
             self._pending_xfade = None
@@ -332,10 +376,32 @@ class Player(QObject):
         self.state_changed.emit(state)
 
     def _on_deck_ended(self, deck: Deck) -> None:
-        if deck is self.deck:
-            self.ended.emit()
+        if deck is not self.deck:
+            return
+        nxt = self._queued
+        if nxt is not None and nxt.state != IDLE:
+            # Gapless hand-over: the waiting deck takes over right away.
+            self._queued = None
+            self._active = self.decks.index(nxt)
+            self._gain[self._active] = 1.0
+            self._soft = 1.0
+            self._cued = False
+            self._apply()
+            if nxt.state == PAUSED:
+                nxt.mp.set_pause(0)
+            else:
+                self._pending_start = nxt      # still buffering: start as soon as it's ready
+            self.advanced.emit()
+            if nxt.state == PLAYING:
+                self._ticker.start()
+            return
+        self._queued = None
+        self.ended.emit()
 
     def _on_deck_failed(self, deck: Deck) -> None:
+        if deck is self._queued:
+            self._queued = None               # the song will simply start normally at the end
+            return
         if deck is self.deck:
             self.failed.emit()
 

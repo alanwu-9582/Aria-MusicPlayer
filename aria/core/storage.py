@@ -76,6 +76,17 @@ class Settings:
         "close_to_tray": True,
         "lyrics_enhanced": False,   # also look for lyrics in descriptions / comments
         "mini_pos": "",
+        "discovery": 0.5,           # recommendations: 0 familiar … 1 unexpected
+        "volume_mode": "volume",    # the player bar slider: volume | balance
+        "balance": 0.0,             # Volume Balance: -1 other apps … 0 as is … 1 Aria
+        "balance_mode": "exclude",  # exclude: every app but the excluded ones · only: just the chosen ones
+        "balance_excluded": None,   # None = the built-in list (call apps)
+        "balance_only": [],
+        "timer_source": "library",  # Time-Fitted Playlist picks from: library | queue
+        "library_view": "list",     # list | rack
+        "playlist_view": "list",    # list | rack
+        "shelf_view": "cover",      # cover | spine
+        "reduce_motion": False,     # hover effects change instantly
     }
 
     def __init__(self):

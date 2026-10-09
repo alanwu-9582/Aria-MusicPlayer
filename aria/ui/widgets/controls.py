@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QPainter
-from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
                                QToolButton, QWidget)
 
 from aria.ui import icons
@@ -189,4 +189,70 @@ class CheckBox(QAbstractButton):
         p.setFont(font("callout"))
         p.setPen(theme.color("label"))
         p.drawText(QRectF(24, 0, self.width() - 24, self.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
+        p.end()
+
+
+class MenuButton(QAbstractButton):
+    """A pop-up choice (§4.3): the current option + chevron; clicking lists the options."""
+
+    changed = Signal(int)
+
+    def __init__(self, items: list[str], index: int = 0, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.items = items
+        self._index = max(0, min(len(items) - 1, index))
+        self._hover = False
+        self.setFixedHeight(ROW)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.clicked.connect(self._pop)
+        theme.changed.connect(self.update)
+
+    def index(self) -> int:
+        return self._index
+
+    def set_index(self, i: int, emit: bool = False) -> None:
+        i = max(0, min(len(self.items) - 1, i))
+        if i != self._index:
+            self._index = i
+            self.update()
+            if emit:
+                self.changed.emit(i)
+
+    def sizeHint(self) -> QSize:
+        fm = QFontMetrics(font("callout"))
+        return QSize(max(fm.horizontalAdvance(t) for t in self.items) + 40, ROW)
+
+    def _pop(self) -> None:
+        m = QMenu(self)
+        for i, text in enumerate(self.items):
+            act = m.addAction(text, lambda i=i: self.set_index(i, emit=True))
+            if i == self._index:
+                act.setIcon(icons.icon("check", theme.color("accent"), 16))
+        m.setMinimumWidth(self.width())
+        m.exec(self.mapToGlobal(QPoint(0, self.height() + 2)))
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(theme.color("accent") if self.hasFocus() else theme.color("separator_hex"))
+        p.setBrush(theme.color("control_hover" if self._hover else "control"))
+        p.drawRoundedRect(r, 7, 7)
+        p.setFont(font("callout"))
+        p.setPen(theme.color("label" if self.isEnabled() else "tertiary"))
+        text = QFontMetrics(p.font()).elidedText(self.items[self._index], Qt.TextElideMode.ElideRight,
+                                                 int(r.width() - 34))
+        p.drawText(r.adjusted(10, 0, -26, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        p.drawPixmap(QRectF(r.right() - 22, r.center().y() - 7, 14, 14).toRect(),
+                     icons.pixmap("chevron-down", theme.color("secondary"), 14))
         p.end()

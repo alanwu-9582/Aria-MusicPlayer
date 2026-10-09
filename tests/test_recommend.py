@@ -28,3 +28,24 @@ def test_spread_keeps_all_items():
     out = [t.id for t in _spread(ts)]
     assert sorted(out) == ["0", "1", "2", "3", "4"]
     assert out[:4] == ["0", "3", "1", "4"]
+
+
+def test_listened_together_counts_neighbours():
+    from aria.core.recommend import artist_id, listened_together
+    h = [yt("1", "A - x", "A"), yt("2", "B - y", "B"), yt("3", "Z - q", "Z"),
+         yt("4", "C - z", "C"), yt("5", "A - w", "A"), yt("6", "B - v", "B")]
+    got = listened_together(h, {artist_id(h[0])}, window=1)
+    assert got[artist_id(h[1])] == 2          # B played right after A, twice
+    assert got[artist_id(h[3])] == 1          # C just before the second A
+    assert artist_id(h[2]) not in got         # Z never adjacent to A
+
+
+def test_taste_nudges_but_keeps_radio_order():
+    from aria.core.recommend import rank_by_taste
+    seed = yt("s", "A - seed", "A")
+    radio = [yt(str(i), f"Artist{i} - song", f"Artist{i}") for i in range(10)]
+    history = [seed, yt("h", "Artist8 - old", "Artist8"), seed]      # Artist8 often follows A
+    ranked = rank_by_taste(radio, [radio], [seed], history, [])
+    ids = [t.id for t in ranked]
+    assert ids.index("8") < 8                  # moved up…
+    assert ids[0] == "0"                       # …but the radio's first pick still leads

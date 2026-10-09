@@ -3,6 +3,8 @@
 Click anywhere on the track jumps there and keeps dragging; pressing the thumb
 doesn't jump; double-click restores the default; arrows step, Shift ×10.
 ``moved`` fires while dragging, ``committed`` once on release.
+A *bipolar* slider fills from its default (the centre) towards the thumb and
+marks the centre with a tick.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ class Slider(QWidget):
         self._value = default
         self.default = default
         self.step = step
+        self.bipolar = False
         self._hover = False
         self._drag = False
         self._grab = 0.0
@@ -147,7 +150,13 @@ class Slider(QWidget):
         p.setBrush(theme.color("fill_strong"))
         p.drawRoundedRect(t, 1.33, 1.33)
         x = self._x_of(self._value)
-        if self._max:
+        if self._max and self.bipolar:
+            c = self._x_of(self.default)
+            p.setBrush(theme.color("tertiary"))
+            p.drawRoundedRect(QRectF(c - 1, t.top() - 3, 2, t.height() + 6), 0.6, 0.6)
+            p.setBrush(theme.color("accent"))
+            p.drawRoundedRect(QRectF(min(x, c), t.top(), abs(x - c), t.height()), 1.33, 1.33)
+        elif self._max:
             p.setBrush(theme.color("accent"))
             p.drawRoundedRect(QRectF(t.left(), t.top(), x - t.left(), t.height()), 1.33, 1.33)
         big = self._hover or self._drag or self.hasFocus()

@@ -69,7 +69,9 @@ class TrackDelegate(QStyledItemDelegate):
         self.view = view
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(option.rect.width(), ROW_H)
+        # Rows always span the visible width (a list first laid out while hidden would
+        # otherwise keep a stale width and draw its row buttons off the edge).
+        return QSize(self.view.viewport().width(), ROW_H)
 
     def _action_rects(self, rect: QRect) -> list[QRect]:
         n = len(self.view.actions)
@@ -350,6 +352,11 @@ class TrackListView(QListView):
             self.delete_pressed.emit(self.selected_rows())
             return
         super().keyPressEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if e.size().width() != e.oldSize().width():
+            self.scheduleDelayedItemsLayout()       # re-measure rows for the new width
 
     def paintEvent(self, e):
         super().paintEvent(e)

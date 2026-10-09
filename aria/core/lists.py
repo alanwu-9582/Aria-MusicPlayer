@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from aria import paths
 from aria.core.models import Track
+from aria.core.smart import SmartCollection
 from aria.core.storage import DebouncedSaver, read_json
 
 
@@ -66,16 +67,44 @@ class Album:
 
 
 class Playlists(QObject):
+    """The user's playlists and Smart Collections (rule-based lists)."""
+
     changed = Signal()                   # added / removed / renamed / reordered lists
-    playlist_changed = Signal(str)       # tracks of one list changed
+    playlist_changed = Signal(str)       # tracks of one list changed (or a smart list's rules)
 
     def __init__(self):
         super().__init__()
-        self.items = [Playlist.from_dict(d) for d in read_json(paths.PLAYLISTS_FILE, {}).get("playlists", [])]
-        self._saver = DebouncedSaver(paths.PLAYLISTS_FILE, lambda: {"playlists": [p.to_dict() for p in self.items]})
+        data = read_json(paths.PLAYLISTS_FILE, {})
+        self.items = [Playlist.from_dict(d) for d in data.get("playlists", [])]
+        self.smart = [SmartCollection.from_dict(d) for d in data.get("smart", [])]
+        self._saver = DebouncedSaver(paths.PLAYLISTS_FILE, lambda: {
+            "playlists": [p.to_dict() for p in self.items], "smart": [s.to_dict() for s in self.smart]})
 
     def get(self, pid: str) -> Playlist | None:
         return next((p for p in self.items if p.id == pid), None)
+
+    # ---- smart collections -----------------------------------------------------
+
+    def get_smart(self, sid: str) -> SmartCollection | None:
+        return next((s for s in self.smart if s.id == sid), None)
+
+    def add_smart(self, sc: SmartCollection) -> SmartCollection:
+        self.smart.append(sc)
+        self._saver.schedule()
+        self.changed.emit()
+        return sc
+
+    def update_smart(self, sc: SmartCollection) -> None:
+        self._saver.schedule()
+        self.changed.emit()
+        self.playlist_changed.emit(sc.id)
+
+    def delete_smart(self, sid: str) -> None:
+        self.smart = [s for s in self.smart if s.id != sid]
+        self._saver.schedule()
+        self.changed.emit()
+
+    # ---- playlists -------------------------------------------------------------
 
     def create(self, name: str, tracks: list[Track] | None = None) -> Playlist:
         p = Playlist(name=name.strip() or "Untitled Playlist", tracks=[t.copy() for t in tracks or []])

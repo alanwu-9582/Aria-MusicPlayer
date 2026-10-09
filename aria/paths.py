@@ -18,6 +18,8 @@ SESSION_FILE = DATA_DIR / "session.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 SHELF_FILE = DATA_DIR / "shelf.json"
+LISTENING_FILE = DATA_DIR / "listening.json"
+BALANCE_FILE = DATA_DIR / "balance.json"
 LOG_FILE = DATA_DIR / "aria.log"
 
 # v1 files, migrated on first launch

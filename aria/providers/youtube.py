@@ -124,7 +124,8 @@ class YouTube(Provider):
                         "kind": "album" if pid.startswith("OLAK5uy_") else "playlist"})
         return out
 
-    def mix(self, vid: str, limit: int = 30) -> list[Track]:
-        """YouTube Music radio for a video: songs related to it."""
-        entries = ytdlp.flat(f"https://www.youtube.com/watch?v={vid}&list=RDAMVM{vid}", limit=limit)
+    def mix(self, vid: str, limit: int = 30, music: bool = True) -> list[Track]:
+        """YouTube Music radio for a video (``music``), or the regular YouTube mix: songs related to it."""
+        entries = ytdlp.flat(f"https://www.youtube.com/watch?v={vid}&list={'RDAMVM' if music else 'RD'}{vid}",
+                             limit=limit)
         return [t for t in map(from_entry, entries) if t and t.id != vid]

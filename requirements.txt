@@ -4,3 +4,4 @@ yt-dlp>=2026.8.19
 yt-dlp-ejs>=0.8
 requests>=2.31
 truststore>=0.9
+comtypes>=1.2; sys_platform == "win32"

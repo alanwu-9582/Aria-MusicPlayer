@@ -146,7 +146,7 @@ class Sidebar(QFrame):
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         self.pl_title = self._section("Playlists", add_to_body=False)
-        self.add_btn = IconButton("plus", "New Playlist (Ctrl+N)", size=22, icon_size=14, tone="secondary")
+        self.add_btn = IconButton("plus", "New Playlist or Smart Collection", size=22, icon_size=14, tone="secondary")
         self.add_btn.clicked.connect(self.new_playlist)
         head.addWidget(self.pl_title, 1)
         head.addWidget(self.add_btn)
@@ -188,13 +188,14 @@ class Sidebar(QFrame):
 
     # ---- playlists -------------------------------------------------------------
 
-    def set_playlists(self, playlists: list[tuple[str, str]]) -> None:
+    def set_playlists(self, playlists: list[tuple[str, str, str]]) -> None:
+        """(id, name, icon) for every playlist and Smart Collection."""
         current = next((pid for pid, it in self.pl_items.items() if it.isChecked()), None)
         for it in self.pl_items.values():
             it.deleteLater()
         self.pl_items.clear()
-        for pid, name in playlists:
-            it = SidebarItem("list", name)
+        for pid, name, icon in playlists:
+            it = SidebarItem(icon, name)
             it.collapsed = self.collapsed
             it.setToolTip(name if self.collapsed else "")
             it.setChecked(pid == current)
