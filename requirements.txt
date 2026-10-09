@@ -1,5 +1,6 @@
-pytube==15.0.0
-yt-dlp==2023.7.6
-Pillow==9.4.0
-requests==2.31.0
-python-vlc==3.0.18122
+PySide6-Essentials>=6.7
+python-vlc>=3.0.18122
+yt-dlp>=2026.8.19
+yt-dlp-ejs>=0.8
+requests>=2.31
+truststore>=0.9

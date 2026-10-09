@@ -1,1 +1,14 @@
+# media
 *.webm
+*.m4a
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# runtime data (library, queue, settings, downloads, caches, log)
+data/
+
+# editor
+.vscode/
