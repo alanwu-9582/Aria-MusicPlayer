@@ -306,6 +306,12 @@ class TempoLibrary(QObject):
         self._gap.setSingleShot(True)
         self._gap.timeout.connect(self._next)
 
+    def rekey(self, old: str, new: str) -> None:
+        """A song changed source: its measured tempo stays with it."""
+        if old in self.data and new not in self.data:
+            self.data[new] = self.data.pop(old)
+            self._saver.schedule()
+
     def get(self, track: Track | None) -> tuple[float, float] | None:
         if track is None:
             return None

@@ -26,11 +26,20 @@ class LogBus(QObject):
     """Thread-safe bridge: records emitted from any thread arrive on the GUI thread."""
 
     record = Signal(object)
+    cleared = Signal(int)                # cleared automatically after this many messages
 
     def __init__(self, capacity: int = 2000):
         super().__init__()
         self.history: collections.deque[LogRecord] = collections.deque(maxlen=capacity)
-        self.record.connect(self.history.append)
+        self.limit = 0                   # clear after this many messages (0 = keep the latest ``capacity``)
+        self.record.connect(self._keep)
+
+    def _keep(self, r: LogRecord) -> None:
+        if self.limit and len(self.history) >= self.limit:
+            n = len(self.history)
+            self.history.clear()
+            self.cleared.emit(n)
+        self.history.append(r)
 
 
 class _BusHandler(logging.Handler):

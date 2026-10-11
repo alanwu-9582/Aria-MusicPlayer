@@ -291,3 +291,55 @@ def test_flow_order_without_a_starting_beat_starts_from_the_first_known():
     bpm = {"a": (100, 0.9), "b": (150, 0.9), "c": (104, 0.9), "d": (146, 0.9)}
     got = [t.id for t in flow_order([yt(k) for k in "abcd"], _bpms(bpm), start=None, recent=[], strength="strong")]
     assert got[:2] == ["a", "c"]                         # the close beats start together
+
+
+# ---- switch source -----------------------------------------------------------------
+
+def test_switch_source_reads_the_song_out_of_a_video_title():
+    from aria.core.switch import _song
+    assert _song(yt("a", "米津玄師  Kenshi Yonezu  - Lemon", "Kenshi Yonezu  米津玄師")) == ("Lemon", "米津玄師")
+    assert _song(yt("b", "Official髭男dism - Pretender［Official Video］", "Official髭男dism"))[0] == "Pretender"
+    assert _song(yt("c", "YOASOBI「アイドル」 Official Music Video", "YOASOBI"))[0] == "アイドル"
+
+
+def test_switch_source_rejects_other_recordings():
+    from aria.core.models import SPOTIFY
+    from aria.core.switch import _score
+    want = yt("a", "ヨルシカ - 櫂（OFFICIAL VIDEO）", "ヨルシカ", duration=238)
+    sp = lambda title, d: Track(source=SPOTIFY, id="s", title=title, artist="Yorushika", duration=d)  # noqa: E731
+    assert _score(want, "櫂", "ヨルシカ", sp("櫂", 238.0)) is not None
+    assert _score(want, "櫂", "ヨルシカ", sp("櫂 - Live", 240.0)) is None        # another take
+    assert _score(want, "櫂", "ヨルシカ", sp("櫂", 300.0)) is None               # another edit
+    assert _score(want, "櫂", "ヨルシカ", sp("晴る", 238.0)) is None              # another song
+
+
+def test_switch_source_keeps_the_place_and_the_download(tmp_path, monkeypatch):
+    QCoreApplication.instance() or QCoreApplication([])
+    from aria.core.library import Library
+    from aria.core.lists import Playlists
+    from aria.core.models import SPOTIFY
+    monkeypatch.setattr(paths, "LIBRARY_FILE", tmp_path / "library.json")
+    monkeypatch.setattr(paths, "PLAYLISTS_FILE", tmp_path / "playlists.json")
+    lib = Library([yt("1"), yt("2", local_path="x.m4a"), yt("3")])
+    lists = Playlists()
+    p = lists.create("Mix", [yt("3"), yt("2")])
+    new = Track(source=SPOTIFY, id="sp2", title="Two", match_id="2", local_path="x.m4a")
+    lib.replace("youtube:2", new)
+    lists.replace("youtube:2", new)
+    assert [t.key for t in lib.tracks] == ["youtube:1", "spotify:sp2", "youtube:3"]
+    assert lib.get("spotify:sp2").local_path == "x.m4a" and "youtube:2" not in lib
+    assert [t.key for t in lists.get(p.id).tracks] == ["youtube:3", "spotify:sp2"]
+    lib.replace("youtube:3", Track(source=SPOTIFY, id="sp2", title="Two"))   # already saved: merged
+    assert [t.key for t in lib.tracks] == ["youtube:1", "spotify:sp2"]
+
+
+def test_console_clears_itself_after_the_limit():
+    QCoreApplication.instance() or QCoreApplication([])
+    from aria import log as applog
+    bus = applog.LogBus()
+    bus.limit = 3
+    cleared = []
+    bus.cleared.connect(cleared.append)
+    for i in range(7):
+        bus.record.emit(applog.LogRecord(0, 20, "x", str(i)))
+    assert cleared == [3, 3] and [r.message for r in bus.history] == ["6"]

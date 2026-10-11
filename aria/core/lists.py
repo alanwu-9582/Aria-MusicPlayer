@@ -154,6 +154,23 @@ class Playlists(QObject):
             p.tracks.insert(max(0, min(dst, len(p.tracks))), t)
             self._touch(pid)
 
+    def replace(self, old_key: str, new: Track) -> None:
+        """Every playlist holding the song gets the other version in its place (Switch Source)."""
+        for p in self.items:
+            if not any(t.key == old_key for t in p.tracks):
+                continue
+            had_new = any(t.key == new.key for t in p.tracks)
+            out = []
+            for t in p.tracks:
+                if t.key == old_key:
+                    if not had_new:
+                        out.append(new.copy())
+                        had_new = True
+                else:
+                    out.append(t)
+            p.tracks = out
+            self._touch(p.id)
+
     def set_local(self, key: str, path: str) -> None:
         for p in self.items:
             for t in p.tracks:

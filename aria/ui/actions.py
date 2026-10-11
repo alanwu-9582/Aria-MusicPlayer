@@ -10,7 +10,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QMenu, QWidget
 
-from aria.core.models import LOCAL, Track
+from aria.core.models import LOCAL, SPOTIFY, YOUTUBE, Track
 from aria.ui import icons
 from aria.ui.theme import theme
 
@@ -22,6 +22,7 @@ class TrackActions:
         self.downloader = downloader
         self.playlists = playlists
         self.toast = toast
+        self.switcher = None              # SourceSwitcher, set by the window
 
     def add_to_playlist(self, pid: str | None, tracks: list[Track], parent: QWidget) -> None:
         """Add to an existing playlist, or (pid None) ask for a name and create one."""
@@ -164,6 +165,14 @@ class TrackActions:
         n = self.downloader.add([self.library.get(t.key) or t for t in tracks])
         self.toast("info", f"Downloading {n} song{'s' if n != 1 else ''}" if n else "Already downloaded")
 
+    def switch_source(self, tracks: list[Track], target: str) -> None:
+        if self.switcher.busy:
+            self.toast("info", "Already switching songs — one moment")
+            return
+        n = self.switcher.start([self.library.get(t.key) or t for t in tracks], target)
+        if n > 1:
+            self.toast("info", f"Looking for {n} songs on {'Spotify' if target == SPOTIFY else 'YouTube'}…")
+
     def open_source(self, track: Track) -> None:
         if track.source == LOCAL:
             QDesktopServices.openUrl(QUrl.fromLocalFile(track.local_path))
@@ -191,6 +200,12 @@ class TrackActions:
             add("heart", "Save to Library", lambda: self.save(tracks))
         if any(t.source != LOCAL and not self.local_path_of(t) for t in tracks):
             add("download", "Download", lambda: self.download(tracks))
+        if self.switcher is not None:
+            from aria.core.switch import target_of
+            for target, text in ((SPOTIFY, "Switch to Spotify"), (YOUTUBE, "Switch to YouTube")):
+                some = [t for t in tracks if target_of(t) == target]
+                if some:
+                    add("switch", text, lambda s=some, tg=target: self.switch_source(s, tg))
         if len(tracks) == 1:
             add("external", "Open Source", lambda: self.open_source(tracks[0]))
             if self.local_path_of(tracks[0]):

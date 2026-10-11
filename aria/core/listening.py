@@ -151,6 +151,32 @@ class Listening(QObject):
 
     # ---- queries -------------------------------------------------------------
 
+    def rekey(self, old: str, track: Track) -> None:
+        """A song changed source: its plays and stats follow it."""
+        new = track.key
+        if self._key == old:
+            self._key = new                     # the song being listened to carries on
+        if old in self.stats:
+            st = self.stats.pop(old)
+            if new in self.stats:               # both versions were played: add them up
+                mine = self.stats[new]
+                mine.plays += st.plays
+                mine.finished += st.finished
+                mine.heard += st.heard
+                mine.first = min(x for x in (mine.first, st.first) if x) if (mine.first or st.first) else 0.0
+                mine.last = max(mine.last, st.last)
+            else:
+                self.stats[new] = st
+        if old in self.tracks:
+            self.tracks.pop(old)
+            self.tracks.setdefault(new, track.copy())
+        for sess in self.sessions + ([self.current] if self.current else []):
+            for i, t in enumerate(sess.tracks):
+                if t.key == old:
+                    sess.tracks[i] = track.copy()
+        self._saver.schedule()
+        self.stats_changed.emit()
+
     def stat(self, key: str) -> Stat | None:
         return self.stats.get(key)
 

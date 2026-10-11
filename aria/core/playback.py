@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from aria import paths, providers
 from aria.core import tasks, timefit
-from aria.core.models import LOCAL, Stream, Track
+from aria.core.models import LOCAL, Stream, Track, format_duration
 from aria.core.player import IDLE, LOADING, PAUSED, PLAYING, Player
 from aria.core.recommend import Recommender, assemble, pick_related
 from aria.core.storage import DebouncedSaver, read_json
@@ -292,7 +292,18 @@ class Playback(QObject):
             self.play_now(self.history[index].copy())
 
     def seek(self, seconds: float) -> None:
+        log.info("Seek %s", format_duration(seconds))
         self.player.seek(seconds)
+
+    def seek_by(self, delta: float) -> None:
+        """Jump forwards or back from where the song is (←/→)."""
+        if self.player.state not in (PLAYING, PAUSED):
+            return
+        target = max(0.0, self.player.position() + delta)
+        length = self.player.length()
+        if length > 0:
+            target = min(target, max(0.0, length - 1))
+        self.seek(target)
 
     def set_volume(self, volume: int) -> None:
         before = self.player.volume
@@ -747,7 +758,7 @@ class Playback(QObject):
             self.recommendations = [t for t in self.recommendations if t.id not in taken]
             self.recommendations_changed.emit()
             self.queue_changed.emit()
-            log.info("Autoplay added %d songs", len(picks))
+            log.info("Autoplay + %d", len(picks))
         elif not self._autoplay_waiting:
             self._autoplay_waiting = self.refresh_recommendations(force=True)
 
@@ -990,6 +1001,31 @@ class Playback(QObject):
             log.info("Deleted the downloaded file of a removed song: %s", os.path.basename(path))
         if not self._pending_delete:
             self._delete_timer.stop()
+
+    def replace_track(self, old_key: str, new: Track) -> None:
+        """Switch Source: every copy in the queue, history and recommendations becomes the other
+        version. The song playing right now changes in place and carries on without a break."""
+        hit = {"queue": False, "history": False, "recs": False}
+        for name, lst in (("queue", self.queue), ("history", self.history), ("recs", self.recommendations),
+                          ("recs", self._recs_base)):
+            for i, t in enumerate(lst):
+                if t.key == old_key:
+                    lst[i] = new.copy()
+                    hit[name] = True
+        cur = self.current
+        if cur is not None and cur.key == old_key:
+            keep = cur.local_path or new.local_path
+            for f in ("source", "id", "title", "artist", "url", "thumbnail", "duration", "match_id"):
+                setattr(cur, f, getattr(new, f) or getattr(cur, f))
+            cur.local_path = keep
+            self.current_changed.emit(cur)
+        if hit["queue"]:
+            self.queue_changed.emit()
+        if hit["history"]:
+            self.history_changed.emit()
+        if hit["recs"]:
+            self.recommendations_changed.emit()
+        self.save()
 
     def forget_local(self, key: str) -> None:
         """A downloaded file was deleted: copies of that track go back to streaming."""

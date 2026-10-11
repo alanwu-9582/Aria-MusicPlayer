@@ -6,14 +6,15 @@ from __future__ import annotations
 import logging
 import os
 
-from PySide6.QtCore import QByteArray, QPoint, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLineEdit, QMainWindow, QMenu, QStackedWidget,
-                               QSystemTrayIcon, QVBoxLayout, QWidget)
+from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QIcon, QKeyEvent, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractSlider, QAbstractSpinBox, QApplication, QComboBox, QHBoxLayout,
+                               QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QStackedWidget, QSystemTrayIcon,
+                               QTextEdit, QVBoxLayout, QWidget)
 
 from aria import paths
 from aria.core import smart
-from aria.core.models import LOCAL, SOURCE_LABELS, format_duration
+from aria.core.models import LOCAL, SOURCE_LABELS, Track, format_duration
 from aria.core.player import LOADING, PAUSED, PLAYING
 from aria.ui import icons
 from aria.ui.actions import TrackActions
@@ -82,6 +83,12 @@ class MainWindow(QMainWindow):
 
         self.toast_widget = Toast(central)
         self.actions = TrackActions(playback, library, downloader, playlists, self.toast)
+        from aria.core.switch import SourceSwitcher
+        self.switcher = SourceSwitcher(library, playlists, playback)
+        self.actions.switcher = self.switcher
+        from aria.core.activity import Activity
+        self.activity = Activity(playback, library, downloader, playlists, devices, balance)
+        log_bus.limit = settings["console_clear_after"]
         TrackListView.warm_hook = playback.warm
 
         self.player_bar = PlayerBar(playback, library, balance)
@@ -199,6 +206,9 @@ class MainWindow(QMainWindow):
         self.downloader.finished.connect(self.playlists.set_local)
         self.downloader.finished.connect(pb.local_available)
         self.downloader.idle.connect(self._downloads_done)
+        self.switcher.progress.connect(self._on_switching)
+        self.switcher.finished.connect(self._switched)
+        self.switcher.switched.connect(self._replace_in_lists)
         if self.devices is not None:
             self.devices.switched.connect(lambda text: self.toast("info", text))
         if self.balance is not None:
@@ -219,6 +229,9 @@ class MainWindow(QMainWindow):
         sc("Space", self.playback.toggle)
         sc("Ctrl+Right", self.playback.next, True)
         sc("Ctrl+Left", self.playback.previous, True)
+        sc("Right", lambda: self._arrow(Qt.Key.Key_Right, 5), True)
+        sc("Left", lambda: self._arrow(Qt.Key.Key_Left, -5), True)
+        QApplication.instance().installEventFilter(self)
         sc("Ctrl+F", lambda: (self.go(SEARCH), self.search_page.focus()), True)
         sc("Ctrl+L", lambda: (self.go(SEARCH), self.search_page.focus()), True)
         sc("Ctrl+O", lambda: (self.go(LIBRARY), self.library_page.add_files()), True)
@@ -233,6 +246,28 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Shift+M", self.show_mini, True)
         sc("Ctrl+,", lambda: self.go(SETTINGS), True)
         sc("Ctrl+Q", self.quit_app, True)
+
+    def _arrow(self, key, step: int) -> None:
+        """←/→ seek, except in the controls that move with them (text, sliders, the rack…)."""
+        from aria.ui.widgets.segmented import Segmented
+        from aria.ui.widgets.slider import Slider
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QAbstractSlider, QComboBox,
+                           Slider, Segmented, rack_mod.RackView)):
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(fw, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier))
+            return
+        self.playback.seek_by(step)
+
+    def eventFilter(self, obj, e):
+        # An empty text field has nothing to move through, so ←/→ seek there too
+        # (text fields claim the arrows before shortcuts see them).
+        if (e.type() == QEvent.Type.KeyPress and e.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right)
+                and not e.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+                and isinstance(obj, QLineEdit) and not obj.text() and obj.window() is self):
+            self.playback.seek_by(5 if e.key() == Qt.Key.Key_Right else -5)
+            return True
+        return super().eventFilter(obj, e)
 
     def _unless_typing(self, fn) -> None:
         if not isinstance(QApplication.focusWidget(), QLineEdit):
@@ -346,6 +381,9 @@ class MainWindow(QMainWindow):
 
     def toast(self, kind: str, text: str) -> None:
         self.toast_widget.show_message(text, kind)
+        # every message shown to the user also goes to the Console
+        logging.getLogger("notice").log(
+            {"danger": logging.ERROR, "warning": logging.WARNING}.get(kind, logging.INFO), "%s", text)
 
     def set_appearance(self, appearance: str) -> None:
         self.settings["appearance"] = appearance
@@ -359,6 +397,11 @@ class MainWindow(QMainWindow):
         self.set_appearance(APPEARANCES[(APPEARANCES.index(cur) + 1) % len(APPEARANCES)])
 
     def settings_changed(self, key: str) -> None:
+        value = self.settings[key]
+        if not isinstance(value, (dict, list)):
+            logging.getLogger("settings").info("%s → %s", key, value)
+        if key == "console_clear_after":
+            self.log_bus.limit = value
         if key in ("crossfade", "crossfade_secs"):
             self.playback.apply_settings()
         elif key in ("tempo_flow", "tempo_strength", "tempo_scope"):
@@ -514,6 +557,42 @@ class MainWindow(QMainWindow):
 
         tasks.run(cache.clear, done, lambda e: self.toast("danger", "Couldn’t clear the cache"))
 
+    def free_space(self) -> None:
+        """Delete downloaded songs; they stay saved and in playlists, and stream when played."""
+        from aria.core import cache
+        from aria.ui.widgets.dialogs import confirm
+        if self.downloader.busy:
+            self.toast("info", "Wait for the downloads to finish first")
+            return
+        seen: dict[str, Track] = {}
+        for t in self.library.tracks + [t for p in self.playlists.items for t in p.tracks]:
+            if t.key not in seen and self.actions.local_path_of(t):
+                seen[t.key] = t
+        files = list(seen.values())
+        if not files:
+            self.toast("info", "No downloaded songs to delete")
+            return
+        size = 0
+        for t in files:
+            try:
+                size += os.path.getsize(self.actions.local_path_of(t))
+            except OSError:
+                pass
+        n = len(files)
+        if not confirm(self, f"Free up {cache.human(size)}?",
+                       f"Deletes {n} downloaded song{'s' if n != 1 else ''}. They stay in your Library "
+                       "and playlists, and stream when played.", "Delete Downloads", danger=True):
+            return
+        deleted, kept, later = self.actions.delete_downloads(files)
+        parts = [f"{cache.human(size)} freed" if deleted else "Nothing deleted"]
+        if later:
+            parts.append("the playing song goes when it ends")
+        if kept:
+            parts.append(f"{kept} couldn’t be deleted")
+        self.toast("success" if deleted else "info", " · ".join(parts))
+        if SETTINGS in self._built:
+            self.settings_page.update_cache_size()
+
     def _current_playlist_menu(self, anchor) -> None:
         t = self.playback.current
         if not t:
@@ -617,7 +696,8 @@ class MainWindow(QMainWindow):
             Command("Open Library", "library", lambda: self.go(LIBRARY), "Ctrl+3", "saved"),
             Command("Open Settings", "settings", lambda: self.go(SETTINGS), "Ctrl+,", "preferences options"),
             Command("Open Console", "terminal", lambda: self.go(CONSOLE), "Ctrl+5", "log commands"),
-            Command("Clear Cache", "trash", self.clear_cache, "", "delete free space covers lyrics"),
+            Command("Clear Cache", "trash", self.clear_cache, "", "delete covers lyrics"),
+            Command("Free Up Space", "trash", self.free_space, "", "delete downloads downloaded files storage disk"),
             Command("Check Library", "check-circle", self.check_health, "", "collection health duplicates missing"),
             Command("Back Up Now", "export", lambda: self.snapshot_now("manual", announce=True), "",
                     "snapshot backup save"),
@@ -668,6 +748,37 @@ class MainWindow(QMainWindow):
             mode = " · ".join(x for x in ("Autoplay" if pb.autoplay else "",
                                           "Crossfade" if self.settings["crossfade"] else "") if x)
         self.status.set_parts(state if t else "", source, f"{n:,} in queue", mode)
+
+    def _on_switching(self, done: int, total: int, title: str) -> None:
+        if total > 1:
+            self.status.set_job(f"Switching source {done + 1}/{total}", done / total)
+        else:
+            self.status.set_job("Switching source", None)
+
+    def _replace_in_lists(self, old_key: str, new) -> None:
+        """Any list still showing the old version (search results, an open album…) shows the new one."""
+        from aria.ui.widgets.tracklist import TrackListView
+        for view in self.findChildren(TrackListView):
+            tracks = view.tracks()
+            hit = False
+            for i, t in enumerate(tracks):
+                if t.key == old_key:
+                    tracks[i] = new.copy()
+                    hit = True
+            if hit:
+                view.model_.refresh_all()
+
+    def _switched(self, switched: int, missing: list, target: str) -> None:
+        if not self.downloader.busy:
+            self.status.set_job(None)
+        name = "Spotify" if target == "spotify" else "YouTube"
+        total = switched + len(missing)
+        if not switched:
+            self.toast("warning", f"No match on {name}" if total == 1 else f"None of {total} songs found on {name}")
+        elif missing:
+            self.toast("warning", f"Switched {switched} of {total} to {name} · {len(missing)} not found")
+        else:
+            self.toast("success", f"Switched to {name}" if total == 1 else f"Switched {total} songs to {name}")
 
     def _downloads_done(self, ok: int, failed: int) -> None:
         self.status.set_job(None)

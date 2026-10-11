@@ -33,6 +33,9 @@ IDLE_MS = 3000
 CENTERED, EDITORIAL = "centered", "editorial"
 
 
+SEEK_STEP = 5                  # seconds ←/→ jump
+
+
 def _font(px: int, weight=QFont.Weight.Normal) -> QFont:
     f = QFont()
     f.setFamilies(UI_FAMILIES)
@@ -294,6 +297,10 @@ class ImmersiveView(QWidget):
             self.pb.next()
         elif k == Qt.Key.Key_Left and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.pb.previous()
+        elif k == Qt.Key.Key_Right:
+            self.pb.seek_by(SEEK_STEP)
+        elif k == Qt.Key.Key_Left:
+            self.pb.seek_by(-SEEK_STEP)
         else:
             super().keyPressEvent(e)
             return
@@ -386,7 +393,7 @@ class ImmersiveView(QWidget):
         self._pos, self._len = pos, length
         if self.isVisible():
             self.lyrics.set_position(pos)
-            self.update(self._progress_rect().adjusted(-4, -24, 4, 4))   # just the progress line
+            self.update(self._progress_rect().adjusted(-74, -24, 74, 4))  # just the progress line and its times
 
     # ---- geometry --------------------------------------------------------------
 

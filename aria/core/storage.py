@@ -98,7 +98,8 @@ class Settings:
         "tempo_scope": "recommendations",   # recommendations | playlists (also orders a playlist being played)
         "immersive_layout": "centered",     # Immersive Mode: centered | editorial
         "immersive_lyrics": True,
-        "resume_on_start": False,   # start again with the song (and the moment) Aria was closed on
+        "resume_on_start": False,
+        "console_clear_after": 1000,    # Console: clear itself after this many messages (0 = never)   # start again with the song (and the moment) Aria was closed on
     }
 
     def __init__(self):

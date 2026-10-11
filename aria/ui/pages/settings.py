@@ -18,6 +18,8 @@ from aria.ui.widgets.controls import Button, CheckBox, IconButton, MenuButton, T
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import reserve_scrollbar
 
+CONSOLE_CLEAR = [200, 500, 1000, 0]      # messages; 0 = never
+
 CROSSFADE_SECS = [3, 6, 9, 12]
 APPEARANCES = ["system", "light", "dark"]
 SNAPSHOT_EVERY = ["off", "daily", "weekly"]
@@ -265,6 +267,19 @@ class SettingsPage(Page):
         self.cache_btn.clicked.connect(window.clear_cache)
         self.cache_size = label("", "Secondary")
         data.pair(self.cache_btn, self.cache_size)
+        self.free_btn = Button("Free Up Space", icon="trash",
+                               tooltip="Delete downloaded songs; they stay saved and stream instead")
+        self.free_btn.clicked.connect(window.free_space)
+        self.downloads_size = label("", "Secondary")
+        data.pair(self.free_btn, self.downloads_size)
+
+        # ---- console
+        con = self._group("Console")
+        self.console_clear = Segmented(["200", "500", "1000", "Never"])
+        n = settings["console_clear_after"]
+        self.console_clear.set_index(CONSOLE_CLEAR.index(n) if n in CONSOLE_CLEAR else 2)
+        self.console_clear.changed.connect(lambda i: self._set("console_clear_after", CONSOLE_CLEAR[i]))
+        con.field("Clear After", self.console_clear)
 
         col.addStretch(1)
         body.setMaximumWidth(620)
@@ -377,6 +392,8 @@ class SettingsPage(Page):
         self.cache_size.setText("…")
         tasks.run(cache.size, lambda n: self.cache_size.setText(f"Cache: {cache.human(n)}"),
                   lambda _e: self.cache_size.setText(""))
+        tasks.run(cache.downloads_size, lambda n: self.downloads_size.setText(f"Downloads: {cache.human(n)}"),
+                  lambda _e: self.downloads_size.setText(""))
 
     def on_shown(self) -> None:
         self.update_cache_size()

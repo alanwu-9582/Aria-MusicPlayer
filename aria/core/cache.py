@@ -27,6 +27,18 @@ def size() -> int:
     return total
 
 
+def downloads_size() -> int:
+    """Bytes used by downloaded songs (blocking)."""
+    total = 0
+    try:
+        for entry in os.scandir(paths.AUDIO_DIR):
+            if entry.is_file() and not entry.name.endswith(".part"):
+                total += entry.stat().st_size
+    except OSError:
+        pass
+    return total
+
+
 def clear() -> int:
     """Delete everything in the cache; returns the bytes freed. Files in use are skipped."""
     before = size()

@@ -107,6 +107,23 @@ class Library(QObject):
         self._saver.schedule()
         self.track_updated.emit(track.key)
 
+    def replace(self, old_key: str, new: Track) -> None:
+        """Swap a saved song for another version of it, in the same place (Switch Source).
+        If that version is already saved, the two become one."""
+        old = self._by_key.pop(old_key, None)
+        if old is None:
+            return
+        i = self.tracks.index(old)
+        have = self._by_key.get(new.key)
+        if have is not None:
+            del self.tracks[i]
+            have.local_path = have.local_path or new.local_path
+        else:
+            t = new.copy()
+            self.tracks[i] = t
+            self._by_key[t.key] = t
+        self._changed()
+
     def set_local(self, key: str, path: str) -> None:
         t = self._by_key.get(key)
         if t:
@@ -199,13 +216,13 @@ class Downloader(QObject):
 
         def done(path: str):
             self._ok += 1
-            log.info("Downloaded %s", track.title)
+            log.info("↓ “%s”", track.title)
             self.finished.emit(track.key, path)
             self._next()
 
         def failed(exc: Exception):
             self._fail += 1
-            log.error("Download failed %s: %s", track.title, exc)
+            log.error("↓ Failed “%s”: %s", track.title, exc)
             self._next()
 
         tasks.run(lambda: providers.download(track, report), done, failed)
