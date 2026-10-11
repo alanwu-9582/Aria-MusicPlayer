@@ -68,7 +68,8 @@ class NowPlayingPage(TintedPage):
         self.source = Segmented(["Stream", "Local"], compact=True)
         self.source.changed.connect(lambda i: self.pb.switch_source(i == 1))
         self.playlist_btn = IconButton("list", "Add to Playlist", tone="secondary")
-        row = hbox(info, self.source, self.playlist_btn, self.open_btn, spacing=12)
+        self.immersive_btn = IconButton("expand", "Immersive Mode (F11)", tone="secondary")
+        row = hbox(info, self.source, self.playlist_btn, self.immersive_btn, self.open_btn, spacing=12)
         row.setStretch(0, 1)
         lv.addLayout(row)
         split.addWidget(left)
@@ -88,9 +89,11 @@ class NowPlayingPage(TintedPage):
         self.hist_mode = Segmented(["Songs", "Sessions"], compact=True)
         self.back_btn = IconButton("arrow-left", "All Sessions", tone="secondary")
         self.timer_btn = IconButton("timer", "Listen for a Set Time", tone="secondary")
+        self.tempo_btn = IconButton("waveform", "Arrange by Tempo", tone="secondary")
+        self.undo_btn = IconButton("undo", "Undo Arrange", tone="secondary")
         self.shuffle_btn = IconButton("shuffle", "Shuffle Queue", tone="secondary")
         self.clear_btn = IconButton("trash", "Clear Queue", tone="secondary")
-        self.familiar_btn = IconButton("heart", "Familiar", size=24, icon_size=14, tone="secondary")
+        self.familiar_btn = IconButton("heart", "Familiar", size=24, icon_size=14, tone="secondary", tip=True)
         self.dial = Slider(100, 50, step=10, name="Discovery")
         self.dial.setFixedWidth(96)
         self.dial.setToolTip("Discovery: familiar ↔ unexpected")
@@ -104,7 +107,7 @@ class NowPlayingPage(TintedPage):
         self.lyrics_btn = IconButton("refresh", "Search Lyrics Again", tone="secondary")
         rv.addLayout(hbox(self.hist_mode, self.back_btn, self.count, self.mode_end_btn, None,
                           self.familiar_btn, self.dial, self.unexpected_btn, 6,
-                          self.timer_btn, self.shuffle_btn, self.clear_btn, self.refresh_btn, self.add_recs_btn,
+                          self.timer_btn, self.undo_btn, self.tempo_btn, self.shuffle_btn, self.clear_btn, self.refresh_btn, self.add_recs_btn,
                           self.clear_hist_btn, self.play_session_btn, self.save_session_btn, self.lyrics_btn,
                           spacing=4))
 
@@ -149,6 +152,8 @@ class NowPlayingPage(TintedPage):
         pb, a = self.pb, self.actions
         self.tabs.changed.connect(self._show_tab)
         self.shuffle_btn.clicked.connect(pb.shuffle)
+        self.tempo_btn.clicked.connect(self._arrange_by_tempo)
+        self.undo_btn.clicked.connect(pb.undo_arrange)
         self.clear_btn.clicked.connect(pb.clear)
         self.timer_btn.clicked.connect(self._timer_menu)
         self.mode_end_btn.clicked.connect(self._end_mode)
@@ -201,6 +206,7 @@ class NowPlayingPage(TintedPage):
         pb.history_changed.connect(self._refresh_history)
         pb.recommending.connect(lambda _b: self._update_toolbar())
         pb.mode_changed.connect(self._on_mode)
+        pb.arrange_progress.connect(lambda _d, _t: self._update_toolbar())
         pb.state_changed.connect(lambda s: self.art.set_loading(s == LOADING))
         self.library.changed.connect(self.recs_list.viewport().update)
         self.library.changed.connect(self.hist_list.viewport().update)
@@ -272,6 +278,14 @@ class NowPlayingPage(TintedPage):
         else:
             self.actions.toast("success", f"{len(chosen)} songs · {format_duration(total)}")
         self.tabs.set_index(QUEUE, emit=True)
+
+    def _arrange_by_tempo(self) -> None:
+        known = self.pb.arrange_by_tempo()
+        total = len(self.pb.queue)
+        if known >= total:
+            self.actions.toast("success", "Queue arranged by tempo")
+        else:
+            self.actions.toast("info", f"Arranged by tempo · {total - known} song{'s' if total - known != 1 else ''} still being measured")
 
     # ---- for you: discovery ------------------------------------------------------
 
@@ -376,6 +390,9 @@ class NowPlayingPage(TintedPage):
         if tab == LYRICS:
             lyr = self.lyrics.lyrics
             text = f"{lyr.source} · {'Synced' if lyr.synced else 'Plain'}" if lyr else ""
+        elif tab == QUEUE and pb.measuring[1]:
+            done, total = pb.measuring
+            text = f"Measuring tempo · {done} / {total}"
         elif tab == QUEUE and pb.timer is not None:
             text = f"Timer · {format_duration(pb.timer_remaining())} left"
             end_tip = "Stop Timer"
@@ -392,10 +409,11 @@ class NowPlayingPage(TintedPage):
             text = "Finding…" if busy else f"{n:,} song{'s' if n != 1 else ''}"
         self.count.setText(text)
         self.mode_end_btn.setVisible(bool(end_tip))
-        self.mode_end_btn.setToolTip(end_tip)
+        self.mode_end_btn.set_tip(end_tip)
 
         shown = {
             self.timer_btn: tab == QUEUE, self.shuffle_btn: tab == QUEUE, self.clear_btn: tab == QUEUE,
+            self.tempo_btn: tab == QUEUE, self.undo_btn: tab == QUEUE and pb.can_undo_arrange,
             self.familiar_btn: tab == FOR_YOU, self.dial: tab == FOR_YOU, self.unexpected_btn: tab == FOR_YOU,
             self.refresh_btn: tab == FOR_YOU, self.add_recs_btn: tab == FOR_YOU,
             self.hist_mode: tab == HISTORY and hist_page != 2, self.back_btn: tab == HISTORY and hist_page == 2,
@@ -408,6 +426,7 @@ class NowPlayingPage(TintedPage):
             w.setVisible(on)
         self.timer_btn.setChecked(pb.timer is not None)
         self.shuffle_btn.setEnabled(len(pb.queue) > 1)
+        self.tempo_btn.setEnabled(len(pb.queue) > 1 and pb.tempo is not None)
         self.clear_btn.setEnabled(bool(pb.queue))
         self.refresh_btn.setEnabled(not busy and (pb.current is not None or bool(pb.history)))
         self.add_recs_btn.setEnabled(bool(pb.recommendations))
@@ -445,10 +464,22 @@ class NowPlayingPage(TintedPage):
 
     # ---- updates -------------------------------------------------------------
 
+    def show_bpm(self) -> None:
+        """The playing song's line, with its BPM as quiet extra detail when Tempo Flow knows it."""
+        t = self.pb.current
+        if not t:
+            self.artist.set_full_text("")
+            return
+        bits = [t.artist, t.source_label]
+        info = self.pb.tempo.get(t) if self.pb.tempo is not None and self.settings["tempo_flow"] else None
+        if info and info[1] >= 0.35:
+            bits.append(f"{round(info[0])} BPM")
+        self.artist.set_full_text(" · ".join(b for b in bits if b))
+
     def _on_current(self, t) -> None:
         self.art.set_track(t)
         self.song.set_full_text(t.title if t else "")
-        self.artist.set_full_text((f"{t.artist} · {t.source_label}" if t.artist else t.source_label) if t else "")
+        self.show_bpm()
         self.open_btn.setVisible(t is not None)
         self.playlist_btn.setVisible(t is not None)
         self._sync_source()

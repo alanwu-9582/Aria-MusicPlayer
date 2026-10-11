@@ -1,20 +1,26 @@
-"""Settings (§4.11 group boxes, §6.4 field layout). Changes apply immediately."""
+"""Settings (§4.11 group boxes, §6.4 field layout). Changes apply immediately.
+
+The groups sit on one scrolling page; an outline on the left jumps to a group
+and follows along as you scroll."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFrame, QGridLayout, QLineEdit, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QFontMetrics, QPainter
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QGridLayout, QHBoxLayout, QLineEdit, QScrollArea,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from aria import paths
 from aria.core.balance import DEFAULT_EXCLUDED
 from aria.ui.pages.base import Page
-from aria.ui.widgets.controls import Button, CheckBox, IconButton, Toggle, hbox, label
+from aria.ui.theme import font, theme
+from aria.ui.widgets.controls import Button, CheckBox, IconButton, MenuButton, Toggle, hbox, label
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import reserve_scrollbar
 
 CROSSFADE_SECS = [3, 6, 9, 12]
 APPEARANCES = ["system", "light", "dark"]
+SNAPSHOT_EVERY = ["off", "daily", "weekly"]
 
 
 class Group(QFrame):
@@ -23,6 +29,7 @@ class Group(QFrame):
     def __init__(self, title: str):
         super().__init__()
         self.setObjectName("Group")
+        self.title = title
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
@@ -45,13 +52,58 @@ class Group(QFrame):
             self.grid.addWidget(b, self._row, 1)
         self._row += 1
 
-    def field(self, title: str, control: QWidget) -> None:
+    def field(self, title: str, control) -> None:
         box = QVBoxLayout()
         box.setSpacing(5)
         box.addWidget(label(title, "Secondary"))
-        box.addWidget(control)
+        if isinstance(control, QWidget):
+            box.addWidget(control)
+        else:
+            box.addLayout(control)
         self.grid.addLayout(box, self._row, 0, 1, 2)
         self._row += 1
+
+
+class OutlineItem(QAbstractButton):
+    """One entry of the settings outline: text, with an accent mark when it's the section in view."""
+
+    def __init__(self, text: str):
+        super().__init__()
+        self.setText(text)
+        self.setCheckable(True)
+        self.setFixedHeight(30)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._hover = False
+        theme.changed.connect(self.update)
+
+    def sizeHint(self) -> QSize:
+        return QSize(QFontMetrics(font("callout", 600)).horizontalAdvance(self.text()) + 28, 30)
+
+    def enterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        if self._hover and not self.isChecked():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.color("fill"))
+            p.drawRoundedRect(r, 7, 7)
+        if self.isChecked():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.color("accent"))
+            p.drawRoundedRect(QRectF(2, 8, 3, r.height() - 16), 1, 1)
+        p.setFont(font("callout", 600 if self.isChecked() else 400))
+        p.setPen(theme.color("label" if self.isChecked() else "secondary"))
+        p.drawText(r.adjusted(14, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
+        p.end()
 
 
 class SettingsPage(Page):
@@ -59,22 +111,33 @@ class SettingsPage(Page):
         super().__init__("Settings")
         self.settings = settings
         self.w = window
+        self.groups: list[Group] = []
 
-        scroll = QScrollArea()
+        row = QHBoxLayout()
+        row.setSpacing(20)
+        self.outline = QVBoxLayout()
+        self.outline.setSpacing(2)
+        self.outline.setContentsMargins(0, 0, 0, 0)
+        outline_box = QWidget()
+        outline_box.setFixedWidth(150)
+        outline_box.setLayout(self.outline)
+        row.addWidget(outline_box, 0, Qt.AlignmentFlag.AlignTop)
+        self.scroll = scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         reserve_scrollbar(scroll)
         body = QWidget()
-        col = QVBoxLayout(body)
+        col = self.col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 12, 0)
         col.setSpacing(12)
         scroll.setWidget(body)
-        self.root.addWidget(scroll, 1)
+        row.addWidget(scroll, 1)
+        self.root.addLayout(row, 1)
 
         # ---- playback
-        play = Group("Playback")
+        play = self._group("Playback")
         self.crossfade = self._toggle("Crossfade", "crossfade", "Blend the end of a song into the next")
         self.soft = self._toggle("Soft Resume", "soft_resume", "After a long pause, fade back in")
         play.pair(self.crossfade, self.soft)
@@ -84,18 +147,49 @@ class SettingsPage(Page):
         window.player_bar.auto_btn.toggled.connect(self.auto.setChecked)
         self.local = self._toggle("Switch to Downloads", "auto_local", "Play the file once a download finishes")
         play.pair(self.auto, self.local)
+        self.resume = self._toggle("Resume Where I Left Off", "resume_on_start",
+                                   "When Aria starts, continue the song it was closed on, from that moment")
+        play.pair(self.resume)
         self.fade_len = Segmented([f"{s} s" for s in CROSSFADE_SECS])
         cur = settings["crossfade_secs"]
         self.fade_len.set_index(CROSSFADE_SECS.index(cur) if cur in CROSSFADE_SECS else 1)
         self.fade_len.changed.connect(self._set_fade_len)
         play.field("Crossfade Length", self.fade_len)
-        col.addWidget(play)
+        self.tempo = self._toggle("Tempo Flow", "tempo_flow",
+                                  "Recommended songs with a similar beat play one after another; the tempo drifts")
+        self.tempo_strength = Segmented(["Gentle", "Balanced", "Strong"])
+        strengths = ["gentle", "balanced", "strong"]
+        cur = settings["tempo_strength"]
+        self.tempo_strength.set_index(strengths.index(cur) if cur in strengths else 1)
+        self.tempo_strength.changed.connect(lambda i: self._set("tempo_strength", strengths[i]))
+        play.pair(self.tempo)
+        play.field("Flow Strength", self.tempo_strength)
+        scopes = ["recommendations", "playlists"]
+        self.tempo_scope = Segmented(["Recommendations Only", "Include Playlists"])
+        self.tempo_scope.set_index(scopes.index(settings["tempo_scope"]) if settings["tempo_scope"] in scopes else 0)
+        self.tempo_scope.changed.connect(lambda i: self._set("tempo_scope", scopes[i]))
+        play.field("Tempo Flow Scope", self.tempo_scope)
+        for w in (self.tempo_strength, self.tempo_scope):
+            self.tempo.toggled.connect(w.setEnabled)
+            w.setEnabled(self.tempo.isChecked())
 
-        # ---- audio: Volume Balance
+        # ---- audio: output device + per-device memory + Volume Balance
+        audio = self._group("Audio")
+        self.devices = getattr(window, "devices", None)
+        if self.devices is not None:
+            self.device_pick = MenuButton(["System Default"])
+            self.device_pick.changed.connect(self._pick_device)
+            audio.field("Output", self.device_pick)
+            self.dev_profiles = self._toggle("Volume per Output", "device_profiles_on",
+                                             "Each output keeps its own volume and balance")
+            self.dev_fallback = self._toggle("Fall Back to Default", "device_fallback",
+                                             "If the chosen output goes away, play on the default one")
+            audio.pair(self.dev_profiles, self.dev_fallback)
+            self.devices.devices_changed.connect(self._sync_devices)
+            self._sync_devices()
         self.balance_apps: AppList | None = None
         bal = getattr(window, "balance", None)
         if bal is not None and bal.available:
-            audio = Group("Audio")
             self.balance_mode = Segmented(["All Apps Except Excluded", "Only Chosen Apps"])
             self.balance_mode.set_index(1 if settings["balance_mode"] == "only" else 0)
             audio.field("Volume Balance turns down", self.balance_mode)
@@ -109,17 +203,41 @@ class SettingsPage(Page):
             audio._row += 1
             self.balance_mode.changed.connect(self._set_balance_mode)
             self._set_balance_mode(self.balance_mode.index(), save=False)
-            col.addWidget(audio)
+
+        # ---- library: Collection Health
+        lib = self._group("Library")
+        check = Button("Check Library…", icon="check-circle",
+                       tooltip="Stray downloads, duplicates, missing files and dead links")
+        check.clicked.connect(window.check_health)
+        lib.pair(check, label("Duplicates, missing files, stray downloads", "Caption"))
+
+        # ---- backup: Library Snapshot
+        backup = self._group("Backup")
+        self.snap_every = Segmented(["Off", "Daily", "Weekly"])
+        every = settings["snapshot_every"]
+        self.snap_every.set_index(SNAPSHOT_EVERY.index(every) if every in SNAPSHOT_EVERY else 2)
+        self.snap_every.changed.connect(lambda i: self._set("snapshot_every", SNAPSHOT_EVERY[i]))
+        backup.field("Automatic Snapshots", self.snap_every)
+        self.snap_list = QVBoxLayout()
+        self.snap_list.setSpacing(0)
+        backup.field("Snapshots", self.snap_list)
+        now_btn = Button("Back Up Now", icon="plus")
+        now_btn.clicked.connect(lambda: (window.snapshot_now("manual", announce=True), self.refresh_snapshots()))
+        export_btn = Button("Export…", icon="export", tooltip="Everything in one file — to move Aria to another computer")
+        export_btn.clicked.connect(window.export_backup)
+        import_btn = Button("Import…", icon="import", tooltip="Restore from an exported backup")
+        import_btn.clicked.connect(window.import_backup)
+        backup.grid.addLayout(hbox(now_btn, export_btn, import_btn, None), backup._row, 0, 1, 2)
+        backup._row += 1
 
         # ---- lyrics
-        lyr = Group("Lyrics")
+        lyr = self._group("Lyrics")
         self.lyrics_enh = self._toggle("Deep Lyrics Search", "lyrics_enhanced",
                                        "Also look in video descriptions and comments")
         lyr.pair(self.lyrics_enh)
-        col.addWidget(lyr)
 
         # ---- appearance
-        look = Group("Appearance")
+        look = self._group("Appearance")
         self.appearance = Segmented(["System", "Light", "Dark"])
         self.appearance.set_index(APPEARANCES.index(settings["appearance"]))
         self.appearance.changed.connect(lambda i: window.set_appearance(APPEARANCES[i]))
@@ -127,18 +245,16 @@ class SettingsPage(Page):
         self.smart = self._toggle("Smart Artwork", "smart_artwork", "Tint the background from the cover")
         self.motion = self._toggle("Reduce Motion", "reduce_motion", "Hover effects change instantly")
         look.pair(self.smart, self.motion)
-        col.addWidget(look)
 
         # ---- window
-        win = Group("Window")
+        win = self._group("Window")
         self.tray = self._toggle("Keep Playing in Tray", "close_to_tray", "Closing the window keeps the music going")
         mini = Button("Mini Player", icon="mini")
         mini.clicked.connect(window.show_mini)
         win.pair(self.tray, mini)
-        col.addWidget(win)
 
         # ---- data
-        data = Group("Data")
+        data = self._group("Data")
         downloads = Button("Downloads Folder", icon="folder")
         downloads.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))))
         folder = Button("Data Folder", icon="folder")
@@ -149,12 +265,52 @@ class SettingsPage(Page):
         self.cache_btn.clicked.connect(window.clear_cache)
         self.cache_size = label("", "Secondary")
         data.pair(self.cache_btn, self.cache_size)
-        col.addWidget(data)
+
         col.addStretch(1)
         body.setMaximumWidth(620)
-
+        self.outline.addStretch(1)
+        scroll.verticalScrollBar().valueChanged.connect(lambda _v: self._follow())
         self.crossfade.toggled.connect(lambda on: self.fade_len.setEnabled(on))
         self.fade_len.setEnabled(self.crossfade.isChecked())
+        QTimer.singleShot(0, self._follow)
+
+    # ---- outline ---------------------------------------------------------------
+
+    def _group(self, title: str) -> Group:
+        g = Group(title)
+        self.col.addWidget(g)
+        self.groups.append(g)
+        item = OutlineItem(title)
+        item.clicked.connect(lambda _c=False, g=g: self.jump(g.title))
+        g.outline_item = item
+        self.outline.addWidget(item)
+        return g
+
+    def jump(self, title: str) -> None:
+        """Scroll so the group starts at the top (as far as the page allows)."""
+        g = next((g for g in self.groups if g.title == title), None)
+        if g is not None:
+            self.scroll.verticalScrollBar().setValue(g.y())
+            self._mark(g)
+
+    def _follow(self) -> None:
+        bar = self.scroll.verticalScrollBar()
+        y = bar.value() + 40
+        current = self.groups[0]
+        for g in self.groups:
+            if g.y() <= y:
+                current = g
+        if bar.value() >= bar.maximum() - 2 and bar.maximum() > 0:
+            # at the very bottom the last groups can't reach the top: pick the one in view
+            visible = [g for g in self.groups if g.y() + g.height() / 2 >= bar.value()]
+            current = visible[0] if visible and current not in visible else current
+        self._mark(current)
+
+    def _mark(self, group: Group) -> None:
+        for g in self.groups:
+            g.outline_item.setChecked(g is group)
+
+    # ---- helpers -----------------------------------------------------------------
 
     def _toggle(self, text: str, key: str, tip: str) -> Toggle:
         t = Toggle(text, tip)
@@ -176,6 +332,46 @@ class SettingsPage(Page):
         self.apps_title.setToolTip("" if i == 1 else "Call apps (Discord, Teams, Zoom…) are excluded unless unticked")
         self.balance_apps.rebuild()
 
+    # ---- audio outputs -----------------------------------------------------------
+
+    def _sync_devices(self) -> None:
+        outs = self.devices.outputs()
+        self._device_ids = [""] + [d for d, _n in outs]
+        self.device_pick.items = ["System Default"] + [self.devices.name_of(d) for d, _n in outs]
+        chosen = self.settings["output_device"]
+        if chosen and chosen not in self._device_ids:            # chosen but unplugged: still show it
+            self._device_ids.append(chosen)
+            self.device_pick.items.append(f"{self.devices.name_of(chosen)} (disconnected)")
+        self.device_pick.set_index(self._device_ids.index(chosen) if chosen in self._device_ids else 0)
+        self.device_pick.update()
+
+    def _pick_device(self, i: int) -> None:
+        self.devices.choose(self._device_ids[i])
+
+    # ---- backups -------------------------------------------------------------------
+
+    def refresh_snapshots(self) -> None:
+        from aria.core import snapshot
+        while self.snap_list.count():
+            item = self.snap_list.takeAt(0)
+            lay = item.layout()
+            if lay is not None:
+                while lay.count():
+                    w = lay.takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+            elif item.widget():
+                item.widget().deleteLater()
+        snaps = snapshot.snapshots()[:5]
+        if not snaps:
+            self.snap_list.addWidget(label("No snapshots yet", "Caption"))
+        for s in snaps:
+            restore = Button("Restore…", "borderless")
+            restore.clicked.connect(lambda _c=False, p=s.path: self.w.restore_snapshot(p))
+            self.snap_list.addLayout(hbox(label(s.label), None, restore))
+
+    # ---- page ----------------------------------------------------------------------
+
     def update_cache_size(self) -> None:
         from aria.core import cache, tasks
         self.cache_size.setText("…")
@@ -184,6 +380,10 @@ class SettingsPage(Page):
 
     def on_shown(self) -> None:
         self.update_cache_size()
+        self.refresh_snapshots()
+        if self.devices is not None:
+            self.devices.refresh()
+            self._sync_devices()
         if self.balance_apps is not None:
             self.balance_apps.rebuild(rescan=True)
 

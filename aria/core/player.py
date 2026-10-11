@@ -300,6 +300,26 @@ class Player(QObject):
         self._volume = max(0, min(100, int(volume)))
         self._apply()
 
+    def output_devices(self) -> list[tuple[str, str]]:
+        """(device id, name) of every output VLC can use; the id "" is the system default."""
+        out = []
+        devs = self.decks[0].mp.audio_output_device_enum()
+        d = devs
+        while d:
+            ident = (d.contents.device or b"").decode("utf-8", "replace")
+            name = (d.contents.description or b"").decode("utf-8", "replace")
+            if ident:
+                out.append((ident.upper(), name))
+            d = d.contents.next
+        if devs:
+            vlc.libvlc_audio_output_device_list_release(devs)
+        return out
+
+    def set_output_device(self, device: str) -> None:
+        """Play through ``device`` ("" = the system default); switches live, even mid-song."""
+        for d in self.decks:
+            d.mp.audio_output_device_set(None, device)
+
     def set_balance_gain(self, gain: float) -> None:
         """Aria's own share when Volume Balance favours other apps (1 = untouched)."""
         self._balance = max(0.0, min(1.0, gain))

@@ -106,6 +106,8 @@ class LibraryPage(Page):
 
         library.changed.connect(self._refresh)
         library.track_updated.connect(self.list.model_.refresh_key)
+        # a download finished (or a file went): the rack's offline marks follow
+        library.track_updated.connect(lambda _k: self.rack_mode and self._sync_rack())
         theme.changed.connect(self._retint)
         self._retint()
         self._refresh()
@@ -144,7 +146,7 @@ class LibraryPage(Page):
     def _sync_rack(self, keep: str | None = None) -> None:
         if keep is None and 0 <= self.rack.selected < len(self.rack.items):
             keep = self.rack.items[self.rack.selected].key
-        self.rack.set_items(track_items(self.list.tracks()), keep)
+        self.rack.set_items(track_items(self.list.tracks(), self.actions.local_path_of), keep)
         self._rack_dirty = False
         self._rack_selected(self.rack.selected)
 
@@ -156,8 +158,9 @@ class LibraryPage(Page):
         else:
             t = tracks[i]
             from aria.core.models import format_duration
+            from aria.ui.widgets.rack import STATUS_TEXT
             bits = [t.artist, format_duration(t.duration) if t.duration else "", t.source_label,
-                    "Downloaded" if t.local_path else ""]
+                    STATUS_TEXT[self.rack.items[i].offline]]
             strip.show_item(self.rack.items[i].cover(), t.title, " · ".join(b for b in bits if b))
             strip.show()
         self._update_buttons()

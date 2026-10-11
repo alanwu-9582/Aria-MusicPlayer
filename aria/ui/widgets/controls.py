@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QPainter
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
@@ -35,11 +37,25 @@ class Button(QPushButton):
         self.setIcon(icons.icon(self._icon, theme.color(tone), 15, disabled=theme.color("tertiary")))
 
 
+# Icons whose meaning is plain on sight: they keep an accessible name but show no tooltip
+# (tooltips are for what the interface doesn't already say).
+SELF_EXPLANATORY = {"play", "pause", "next", "previous", "heart", "volume", "volume-low", "mute",
+                    "shuffle", "close", "search"}
+
+
+def accessible(text: str) -> str:
+    """Accessible name from a tooltip text: without the shortcut in brackets."""
+    return re.sub(r"\s*[（(][^)）]*[)）]\s*$", "", text).strip()
+
+
 class IconButton(QToolButton):
-    """30×30 icon-only button; checkable ones turn accent_soft + accent when on (§4.1, §4.5)."""
+    """30×30 icon-only button; checkable ones turn accent_soft + accent when on (§4.1, §4.5).
+    ``tooltip`` always becomes the accessible name; it's shown as a tooltip only when the icon
+    alone doesn't say it (``tip`` forces it on or off)."""
 
     def __init__(self, icon: str, tooltip: str, checkable: bool = False, size: int = ROW,
-                 icon_size: int = 16, tone: str = "label", parent: QWidget | None = None):
+                 icon_size: int = 16, tone: str = "label", parent: QWidget | None = None,
+                 tip: bool | None = None):
         super().__init__(parent)
         self._icon = icon
         self._icon_px = icon_size
@@ -47,8 +63,8 @@ class IconButton(QToolButton):
         self.setCheckable(checkable)
         self.setFixedSize(size, size)
         self.setIconSize(icons.size(icon_size))
-        self.setToolTip(tooltip)
-        self.setAccessibleName(tooltip.split("（")[0])
+        self.show_tip = (icon not in SELF_EXPLANATORY) if tip is None else tip
+        self.set_tip(tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         theme.changed.connect(self._retint)
@@ -57,6 +73,11 @@ class IconButton(QToolButton):
     def set_icon(self, name: str) -> None:
         self._icon = name
         self._retint()
+
+    def set_tip(self, text: str) -> None:
+        """Update what the button says: the accessible name always, the tooltip only when useful."""
+        self.setAccessibleName(accessible(text))
+        self.setToolTip(text if self.show_tip else "")
 
     def set_tone(self, tone: str) -> None:
         self._tone = tone

@@ -3,7 +3,7 @@ collapse + appearance at the bottom. Only the item list scrolls (§6.5)."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics, QPainter
 from PySide6.QtWidgets import QAbstractButton, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
@@ -17,12 +17,17 @@ APPEARANCE_TIP = {"system": "Appearance: System", "light": "Appearance: Light", 
 
 
 class SidebarItem(QAbstractButton):
-    def __init__(self, icon: str, text: str, tooltip: str = "", parent=None):
+    """A navigation entry. ``primary`` (Now Playing) stands a little taller and keeps a faint
+    accent background even when not selected — a quiet main entrance, not a call to action."""
+
+    def __init__(self, icon: str, text: str, tooltip: str = "", primary: bool = False, parent=None):
         super().__init__(parent)
         self.icon_name = icon
+        self.primary = primary
+        self.height_px = 44 if primary else 32
         self.setText(text)
         self.setCheckable(True)
-        self.setFixedHeight(32)
+        self.setFixedHeight(self.height_px)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._tip = tooltip or text
         self.setAccessibleName(text)
@@ -47,10 +52,10 @@ class SidebarItem(QAbstractButton):
             super().keyPressEvent(e)
 
     def sizeHint(self) -> QSize:
-        return QSize(32, 32)          # width comes from the sidebar, never from the item
+        return QSize(32, self.height_px)      # width comes from the sidebar, never from the item
 
     def minimumSizeHint(self) -> QSize:
-        return QSize(32, 32)
+        return QSize(32, self.height_px)
 
     def enterEvent(self, e):
         self._hover = True
@@ -65,21 +70,29 @@ class SidebarItem(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         p.setPen(Qt.PenStyle.NoPen)
+        rad = 9 if self.primary else 7
         if self.isChecked():
             p.setBrush(theme.color("accent_soft"))
-            p.drawRoundedRect(r, 7, 7)
+            p.drawRoundedRect(r, rad, rad)
+        elif self.primary:
+            # stands out a little even unselected, in a neutral tone (the accent means "selected")
+            fill = theme.color("fill")
+            fill.setAlphaF(fill.alphaF() * (1.0 if self._hover else 0.55))
+            p.setBrush(fill)
+            p.drawRoundedRect(r, rad, rad)
         elif self._hover:
             p.setBrush(theme.color("fill"))
-            p.drawRoundedRect(r, 7, 7)
+            p.drawRoundedRect(r, rad, rad)
         if self._kbd_focus and self.hasFocus():
             p.setPen(theme.color("accent"))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 7, 7)
-        color = theme.color("accent" if self.isChecked() else "secondary")
-        ix = (r.width() - 17) / 2 if self.collapsed else 10
-        p.drawPixmap(QRectF(ix, (r.height() - 17) / 2, 17, 17).toRect(), icons.pixmap(self.icon_name, color, 17))
+        color = theme.color("accent" if self.isChecked() else ("label" if self.primary else "secondary"))
+        size = 19 if self.primary else 17
+        ix = (r.width() - size) / 2 if self.collapsed else 10 - (size - 17) / 2
+        p.drawPixmap(QRectF(ix, (r.height() - size) / 2, size, size).toRect(), icons.pixmap(self.icon_name, color, size))
         if not self.collapsed:
-            p.setFont(font("body", 600 if self.isChecked() else 500))
+            p.setFont(font("body", 600 if (self.isChecked() or self.primary) else 500))
             p.setPen(theme.color("label"))
             text = QFontMetrics(p.font()).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(r.width() - 46))
             p.drawText(QRectF(38, 0, r.width() - 42, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
@@ -134,9 +147,9 @@ class Sidebar(QFrame):
             if gi:
                 self.body.addSpacing(12)
             self._section(title)
-            for icon, text in pages:
+            for icon, text, *flags in pages:
                 n += 1
-                item = SidebarItem(icon, text, f"{text}（Ctrl+{n}）")
+                item = SidebarItem(icon, text, f"{text} (Ctrl+{n})", primary="primary" in flags)
                 item.clicked.connect(lambda _c=False, k=len(self.items): self.select(k, emit=True))
                 self.items.append(item)
                 self.body.addWidget(item)
@@ -244,8 +257,26 @@ class Sidebar(QFrame):
         # Collapsed: the appearance button stacks *above*; the collapse button stays put.
         self._bottom.setDirection(QHBoxLayout.Direction.BottomToTop if collapsed else QHBoxLayout.Direction.LeftToRight)
         self._bottom.setContentsMargins(15, 8, 15 if collapsed else 10, 0)
+        self._relayout()
+        QTimer.singleShot(0, self._relayout)      # again once the window is up (at start-up it isn't yet)
         if emit:
             self.collapse_toggled.emit(collapsed)
+
+    def _relayout(self) -> None:
+        """Make the item list take the rail's new width now. Laid out while the window was still
+        hidden (starting collapsed), it would otherwise keep the old width and the icons sit off-centre."""
+        body = self.scroll.widget()
+        self.body.invalidate()
+        self.body.activate()
+        body.resize(self.scroll.viewport().width(), body.sizeHint().height()
+                    if body.height() < body.sizeHint().height() else body.height())
+        self.body.setGeometry(body.rect())
+        for item in self.items + list(self.pl_items.values()):
+            item.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, self._relayout)
 
     def set_appearance(self, appearance: str) -> None:
         self.appearance_btn.set_icon(APPEARANCE_ICON[appearance])

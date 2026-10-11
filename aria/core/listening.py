@@ -141,7 +141,12 @@ class Listening(QObject):
                 "tracks": {k: t.to_dict() for k, t in self.tracks.items()}}
 
     def flush(self) -> None:
+        """At exit: book the song in progress, then save."""
         self._close_track()
+        self._saver.flush()
+
+    def save_now(self) -> None:
+        """Save without touching the song in progress (e.g. for a snapshot)."""
         self._saver.flush()
 
     # ---- queries -------------------------------------------------------------

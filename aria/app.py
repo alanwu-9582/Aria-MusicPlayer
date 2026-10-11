@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -51,6 +51,7 @@ def main() -> int:
     splash.step("Loading the player…")
     from aria.core import tasks
     from aria.core.balance import VolumeBalance
+    from aria.core.devices import AudioDevices
     from aria.core.library import Downloader, Library
     from aria.core.listening import Listening
     from aria.core.lists import Playlists, Shelf
@@ -63,21 +64,29 @@ def main() -> int:
     playback.library = library
     listening = Listening(playback, library)
     playback.listening = listening
+    from aria import providers
+    from aria.core.tempo import TempoLibrary
+    tempo = TempoLibrary(providers.stream)
+    playback.tempo = tempo
+    tempo.updated.connect(playback.on_tempo_known)
     balance = VolumeBalance(settings, playback.player)
+    devices = AudioDevices(settings, playback, balance)
     downloader = Downloader()
     playlists = Playlists()
     shelf = Shelf()
 
     splash.step("Preparing the interface…")
     from aria.ui.main_window import MainWindow
-    window = MainWindow(settings, playback, library, downloader, playlists, shelf, bus, listening, balance)
+    window = MainWindow(settings, playback, library, downloader, playlists, shelf, bus, listening, balance, devices)
     splash.finish(window)
+    QTimer.singleShot(400, playback.resume_last)      # once the window is up
     log.info("Aria %s started · %d in library · %d in queue", __version__, len(library), len(playback.queue))
 
     code = app.exec()
 
     balance.shutdown()                 # other apps get their own volume back
     listening.flush()
+    tempo.shutdown()
     playback.shutdown()
     settings.flush()
     library.flush()

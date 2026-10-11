@@ -72,6 +72,25 @@ def run(fn: Callable[[], Any],
     (_image_pool if images else _pool).start(_Job(fn, relay))
 
 
+class Progress(QObject):
+    """Report progress from a worker: ``emit(done, total)`` is safe from any thread;
+    the callback runs on the GUI thread."""
+
+    _tick = Signal(int, int)
+
+    def __init__(self, callback: Callable[[int, int], None]):
+        super().__init__()
+        self.callback = callback
+        self._tick.connect(self._deliver)      # a slot of this (GUI-thread) object: queued across threads
+
+    @Slot(int, int)
+    def _deliver(self, done: int, total: int) -> None:
+        self.callback(done, total)
+
+    def emit(self, done: int, total: int) -> None:
+        self._tick.emit(done, total)
+
+
 class Latest:
     """Ticket counter so only the newest request's result is applied."""
 

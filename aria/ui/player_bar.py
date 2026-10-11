@@ -133,7 +133,7 @@ class PlayerBar(QFrame):
         self.mute_btn = IconButton("volume", "Mute", tone="secondary")
         self.volume = Slider(100, 70, step=5, name="Volume")
         self.volume.setFixedWidth(110)
-        self.balance_btn = IconButton("scale", "Volume Balance", checkable=True, tone="secondary")
+        self.balance_btn = IconButton("scale", "Volume Balance: Aria vs. other apps", checkable=True, tone="secondary")
         self.balance_btn.setVisible(bool(balance and balance.available))
         right = QWidget()
         right.setFixedWidth(280)
@@ -144,7 +144,9 @@ class PlayerBar(QFrame):
         grid.setColumnStretch(1, 1)
 
         self._wire()
-        self.set_track(None)
+        self.set_track(playback.current)       # a song restored from last time shows straight away…
+        if playback.current:                   # …at the moment it will continue from
+            self._on_position(playback.resume_position(), playback.current.duration)
 
     # ---- wiring --------------------------------------------------------------
 
@@ -182,8 +184,7 @@ class PlayerBar(QFrame):
     def _show_repeat(self, mode: str) -> None:
         self.repeat_btn.set_icon(REPEAT_ICON[mode])
         self.repeat_btn.setChecked(mode != "off")
-        self.repeat_btn.setToolTip(REPEAT_TIP[mode])
-        self.repeat_btn.setAccessibleName(REPEAT_TIP[mode])
+        self.repeat_btn.set_tip(REPEAT_TIP[mode])
 
     # ---- volume / balance ----------------------------------------------------
 
@@ -198,7 +199,7 @@ class PlayerBar(QFrame):
             tip = "Balance: other apps ← → Aria · double-click to centre"
         else:
             self.volume.set_value(self.pb.player.volume)
-            tip = "Volume"
+            tip = ""                  # the speaker icon says it
         self.volume.setToolTip(tip)
         self.volume.setAccessibleName("Volume Balance" if balance else "Volume")
         self.volume.update()
@@ -211,6 +212,11 @@ class PlayerBar(QFrame):
             QToolTip.showText(pos, self.balance.describe(), self.volume)
         else:
             self._set_volume(v)
+
+    def on_balance_changed(self, v: float) -> None:
+        """The balance changed elsewhere (e.g. switching to an output with its own profile)."""
+        if self._balance_mode:
+            self.volume.set_value(50 + 50 * v)
 
     def _set_volume(self, v: float) -> None:
         self.pb.set_volume(int(v))
@@ -235,7 +241,7 @@ class PlayerBar(QFrame):
 
     def _update_volume_icon(self, v: float) -> None:
         self.mute_btn.set_icon("mute" if v == 0 else "volume-low" if v < 50 else "volume")
-        self.mute_btn.setToolTip("Unmute" if v == 0 else "Mute")
+        self.mute_btn.set_tip("Unmute" if v == 0 else "Mute")
 
     def _toggle_saved(self) -> None:
         if self.pb.current:
@@ -259,9 +265,7 @@ class PlayerBar(QFrame):
     def _on_state(self, state: str) -> None:
         playing = state in (PLAYING, LOADING)
         self.play_btn.set_icon("pause" if playing else "play")
-        tip = "Pause (Space)" if playing else "Play (Space)"
-        self.play_btn.setToolTip(tip)
-        self.play_btn.setAccessibleName(tip.split("（")[0])
+        self.play_btn.set_tip("Pause" if playing else "Play")
 
     def _on_position(self, pos: float, length: float) -> None:
         if length and length != self._length:

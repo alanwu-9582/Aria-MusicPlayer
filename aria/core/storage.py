@@ -87,6 +87,18 @@ class Settings:
         "playlist_view": "list",    # list | rack
         "shelf_view": "cover",      # cover | spine
         "reduce_motion": False,     # hover effects change instantly
+        "output_device": "",        # "" = system default, else a device id
+        "device_profiles_on": True, # each output remembers its volume and balance
+        "device_profiles": {},
+        "device_names": {},
+        "device_fallback": True,    # chosen output unplugged → play on the default one
+        "snapshot_every": "weekly", # automatic Library Snapshots: off | daily | weekly
+        "tempo_flow": False,        # recommended songs follow one another by beat
+        "tempo_strength": "balanced",   # gentle | balanced | strong
+        "tempo_scope": "recommendations",   # recommendations | playlists (also orders a playlist being played)
+        "immersive_layout": "centered",     # Immersive Mode: centered | editorial
+        "immersive_lyrics": True,
+        "resume_on_start": False,   # start again with the song (and the moment) Aria was closed on
     }
 
     def __init__(self):

@@ -110,7 +110,7 @@ class MiniPlayer(QWidget):
             self._unmuted = v
         self.volume.set_value(v)
         self.mute.set_icon("mute" if v == 0 else "volume-low" if v < 50 else "volume")
-        self.mute.setToolTip("Unmute" if v == 0 else "Mute")
+        self.mute.set_tip("Unmute" if v == 0 else "Mute")
 
     def _toggle_mute(self) -> None:
         self.pb.set_volume(0 if self.pb.player.volume else (self._unmuted or 70))

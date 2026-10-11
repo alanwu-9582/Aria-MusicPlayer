@@ -32,6 +32,9 @@ GAP = 3
 LIFT = 7
 ANIM_MS = 190
 KIND_ICON = {"single": "disc", "album": "disc", "playlist": "list"}
+# Offline state: full = every song downloaded, partial = some, none = streams only.
+STATUS_TEXT = {"full": "Available Offline", "partial": "Partially Downloaded", "none": "Stream Only"}
+SHORT_STATUS = {"full": "Offline", "partial": "Partly Offline", "none": "Streaming"}
 
 reduce_motion = False         # set from the settings: hover state changes instantly
 
@@ -44,6 +47,7 @@ class RackItem:
     kind: str = "single"                                    # single | album | playlist
     cover: Callable[[], QPixmap | None] = field(default=lambda: None)
     tooltip: str = ""
+    offline: str = "none"                                   # full | partial | none (worked out when the data changes)
 
 
 def _square(pm: QPixmap, side: int, dpr: float) -> QPixmap:
@@ -79,6 +83,7 @@ class RackView(QWidget):
         self._pull: dict[int, float] = {}     # index → 0..1 pulled out
         self._anims: dict[int, QVariantAnimation] = {}
         self._spines: dict[tuple, QPixmap] = {}
+        self._elided: set[str] = set()        # keys whose spine text didn't fit (only those get a tooltip)
         self._covers: dict[tuple, QPixmap] = {}
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -315,8 +320,9 @@ class RackView(QWidget):
 
     def event(self, e):
         if e.type() == e.Type.ToolTip:
+            # Only a name the spine had to cut short; status and details live in the rack itself.
             i = self._index_at(e.pos())
-            if i >= 0:
+            if i >= 0 and self.items[i].key in self._elided:
                 it = self.items[i]
                 QToolTip.showText(e.globalPos(), it.tooltip or " — ".join(x for x in (it.title, it.subtitle) if x), self)
             else:
@@ -343,7 +349,7 @@ class RackView(QWidget):
     def _spine(self, it: RackItem, dpr: float) -> QPixmap:
         pm = it.cover()
         ck = pm.cacheKey() if pm is not None and not pm.isNull() else 0
-        key = (it.key, ck, self.spine_w, self.case_h, theme.dark, dpr)
+        key = (it.key, ck, it.offline, self.spine_w, self.case_h, theme.dark, dpr)
         sp = self._spines.get(key)
         if sp is None:
             sp = self._spines[key] = self._render_spine(it, pm if ck else None, dpr)
@@ -374,7 +380,16 @@ class RackView(QWidget):
         g.setColorAt(0.85, QColor(0, 0, 0, 0))
         g.setColorAt(1.0, QColor(0, 0, 0, 70 if dark else 45))
         p.fillPath(path, g)
-        p.setPen(QColor(255, 255, 255, 34) if dark else QColor(0, 0, 0, 28))
+        full = it.offline == "full"
+        if full:
+            # downloaded: a touch more edge contrast and a faint sheen down the side
+            sheen = QLinearGradient(0, 0, w, 0)
+            sheen.setColorAt(0.10, QColor(255, 255, 255, 0))
+            sheen.setColorAt(0.18, QColor(255, 255, 255, 46 if dark else 70))
+            sheen.setColorAt(0.28, QColor(255, 255, 255, 0))
+            p.fillPath(path, sheen)
+        edge = (QColor(255, 255, 255, 60 if full else 34) if dark else QColor(0, 0, 0, 48 if full else 28))
+        p.setPen(edge)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 2.5, 2.5)
 
@@ -382,15 +397,34 @@ class RackView(QWidget):
         fg = QColor("#f5f5f7") if light_text else QColor("#1d1d1f")
         sub = QColor(fg)
         sub.setAlphaF(0.72)
-        # kind mark at the top
+        # offline mark: a short line a little below the top edge — solid when downloaded,
+        # half solid when only some of the songs are
+        if it.offline in ("full", "partial"):
+            mark = QColor(fg)
+            mark.setAlphaF(0.85)
+            lw = max(10.0, w * 0.46)
+            line = QRectF((w - lw) / 2, 9, lw, 2)
+            p.setPen(Qt.PenStyle.NoPen)
+            if full:
+                p.setBrush(mark)
+                p.drawRoundedRect(line, 1, 1)
+            else:
+                faint = QColor(mark)
+                faint.setAlphaF(0.3)
+                p.setBrush(faint)
+                p.drawRoundedRect(line, 1, 1)
+                p.setBrush(mark)
+                p.drawRoundedRect(QRectF(line.left(), line.top(), lw / 2, 2), 1, 1)
+        # kind mark below it
         icon = KIND_ICON.get(it.kind, "disc")
         s = min(12, w - 12)
-        p.drawPixmap(QRectF((w - s) / 2, 8, s, s).toRect(), icons.pixmap(icon, sub, s))
+        top = 17
+        p.drawPixmap(QRectF((w - s) / 2, top, s, s).toRect(), icons.pixmap(icon, sub, s))
         # rotated title (top → bottom) and artist at the foot
         p.save()
-        p.translate(w / 2, 8 + s + 6)
+        p.translate(w / 2, top + s + 6)
         p.rotate(90)
-        length = h - (8 + s + 6) - 8
+        length = h - (top + s + 6) - 8
         tf = font("caption", 600) if w < 40 else font("callout", 600)
         sf = font("caption")
         fm_t, fm_s = QFontMetrics(tf), QFontMetrics(sf)
@@ -398,6 +432,12 @@ class RackView(QWidget):
         sub_w = min(fm_s.horizontalAdvance(sub_text), int(length * 0.38)) if sub_text else 0
         title_w = length - (sub_w + 10 if sub_w else 0)
         two_lines = w >= 40 and sub_text
+        fits = (fm_t.horizontalAdvance(it.title) <= (length if two_lines else title_w)
+                and (not sub_text or fm_s.horizontalAdvance(sub_text) <= (length if two_lines else sub_w)))
+        if fits:
+            self._elided.discard(it.key)
+        else:
+            self._elided.add(it.key)
         if two_lines:
             # wide spines: title above artist, both along the full length
             p.setFont(tf)
@@ -485,6 +525,23 @@ class RackView(QWidget):
             g.setColorAt(0, QColor(255, 255, 255, 34))
             g.setColorAt(0.5, QColor(255, 255, 255, 0))
             p.fillRect(cover_r, g)
+            if self._reveal_w() >= 90 and t > 0.6:
+                # wide enough to say where the album plays from (the same status the spine dot shows)
+                p.setFont(font("caption", 600))
+                fm = QFontMetrics(p.font())
+                text = STATUS_TEXT.get(it.offline, "")
+                if fm.horizontalAdvance(text) + 14 > cover_r.width() - 12:
+                    text = SHORT_STATUS.get(it.offline, text)      # say it shorter rather than cut it
+                tw = fm.horizontalAdvance(text) + 14
+                pill = QRectF(cover_r.left() + 6, cover_r.bottom() - 26, min(tw, cover_r.width() - 12), 20)
+                p.setOpacity(min(1.0, (t - 0.6) / 0.4))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(20, 20, 22, 190))
+                p.drawRoundedRect(pill, 6, 6)
+                p.setPen(QColor("#f5f5f7"))
+                p.drawText(pill, Qt.AlignmentFlag.AlignCenter,
+                           QFontMetrics(p.font()).elidedText(text, Qt.TextElideMode.ElideRight, int(pill.width() - 8)))
+                p.setOpacity(1.0)
             p.restore()
             p.setPen(QColor(255, 255, 255, 40) if theme.dark else QColor(0, 0, 0, 30))   # pale covers keep an edge
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -593,8 +650,10 @@ class RackPanel(QWidget):
             p.end()
 
 
-def track_items(tracks) -> list[RackItem]:
-    """Every song as a single CD: the song name on the spine, the performer at its foot."""
+def track_items(tracks, local_of=None) -> list[RackItem]:
+    """Every song as a single CD: the song name on the spine, the performer at its foot.
+    ``local_of(track)`` → its downloaded file ("" when it streams)."""
+    import os
     from aria.core import textnorm
     from aria.ui.widgets import thumbs as thumbs_mod
 
@@ -602,7 +661,9 @@ def track_items(tracks) -> list[RackItem]:
     out = []
     for t in tracks:
         artist = textnorm.artist_of(t.title, t.artist) or textnorm.clean_channel(t.artist)
+        local = local_of(t) if local_of else (t.local_path if t.local_path and os.path.exists(t.local_path) else "")
         out.append(RackItem(key=t.key, title=textnorm.display_title(t.title, t.artist), subtitle=artist,
                             kind="single", tooltip=f"{t.title}\n{t.artist}" if t.artist else t.title,
+                            offline="full" if local else "none",
                             cover=(lambda u=t.thumbnail: thumbs.get(u, 180) if u else None)))
     return out

@@ -4,6 +4,7 @@ and the Quick Actions palette (Ctrl+K)."""
 from __future__ import annotations
 
 import logging
+import os
 
 from PySide6.QtCore import QByteArray, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
@@ -35,7 +36,7 @@ from aria.ui.widgets.tracklist import TrackListView
 log = logging.getLogger(__name__)
 
 GROUPS = [
-    ("Music", [("music", "Now Playing"), ("search", "Search"), ("library", "Library"), ("disc", "Shelf")]),
+    ("Music", [("music", "Now Playing", "primary"), ("search", "Search"), ("library", "Library"), ("disc", "Shelf")]),
     ("Tools", [("terminal", "Console"), ("settings", "Settings")]),
 ]
 PAGE_COUNT = sum(len(items) for _t, items in GROUPS)
@@ -47,10 +48,11 @@ APPEARANCES = ("system", "light", "dark")
 
 class MainWindow(QMainWindow):
     def __init__(self, settings, playback, library, downloader, playlists, shelf, log_bus,
-                 listening=None, balance=None):
+                 listening=None, balance=None, devices=None):
         super().__init__()
         self.listening = listening
         self.balance = balance
+        self.devices = devices
         rack_mod.reduce_motion = bool(settings["reduce_motion"])
         self.settings = settings
         self.playback = playback
@@ -108,10 +110,18 @@ class MainWindow(QMainWindow):
             self.tray.show()
 
         self.quick = QuickActions(self)
+        self.immersive = None                       # built the first time it's opened
         # The status bar counts a listening timer down while one runs.
         self._status_tick = QTimer(self)
         self._status_tick.setInterval(1000)
         self._status_tick.timeout.connect(self._update_status)
+
+        # Automatic Library Snapshots: shortly after start, then hourly checks.
+        self._snap_timer = QTimer(self)
+        self._snap_timer.setInterval(3_600_000)
+        self._snap_timer.timeout.connect(self._auto_snapshot)
+        self._snap_timer.start()
+        QTimer.singleShot(20_000, self._auto_snapshot)
 
         self._wire()
         self._shortcuts()
@@ -173,11 +183,13 @@ class MainWindow(QMainWindow):
         pb.queue_changed.connect(self._update_status)
         pb.source_changed.connect(lambda _l: self._update_status())
         pb.mode_changed.connect(self._on_mode)
+        pb.arrange_progress.connect(self._on_measuring)
         self.player_bar.auto_btn.toggled.connect(lambda _on: self._update_status())
         self.player_bar.mini_btn.clicked.connect(self.show_mini)
         self.player_bar.playlist_btn.clicked.connect(
             lambda: self._current_playlist_menu(self.player_bar.playlist_btn))
         self.now_page.playlist_btn.clicked.connect(lambda: self._current_playlist_menu(self.now_page.playlist_btn))
+        self.now_page.immersive_btn.clicked.connect(self.toggle_immersive)
         self.now_page.art.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.now_page.art.customContextMenuRequested.connect(
             lambda pos: self.playback.current and self.actions.menu(self, [self.playback.current]).exec(
@@ -187,6 +199,12 @@ class MainWindow(QMainWindow):
         self.downloader.finished.connect(self.playlists.set_local)
         self.downloader.finished.connect(pb.local_available)
         self.downloader.idle.connect(self._downloads_done)
+        if self.devices is not None:
+            self.devices.switched.connect(lambda text: self.toast("info", text))
+        if self.balance is not None:
+            self.balance.changed.connect(self.player_bar.on_balance_changed)
+        if pb.tempo is not None:
+            pb.tempo.updated.connect(lambda key: pb.current and pb.current.key == key and self.now_page.show_bpm())
         pb.file_deleted.connect(lambda key: self.library.set_local(key, ""))
         pb.file_deleted.connect(lambda key: self.playlists.set_local(key, ""))
 
@@ -206,6 +224,7 @@ class MainWindow(QMainWindow):
         sc("Ctrl+O", lambda: (self.go(LIBRARY), self.library_page.add_files()), True)
         sc("Ctrl+N", self.new_playlist, True)
         sc("Ctrl+K", self.open_quick, True)
+        sc("F11", self.toggle_immersive, True)
         sc("Ctrl+D", self._save_current, True)
         sc("Ctrl+P", lambda: self._current_playlist_menu(self.player_bar.playlist_btn), True)
         sc("Ctrl+Up", lambda: self._nudge_volume(5), True)
@@ -297,7 +316,7 @@ class MainWindow(QMainWindow):
         if sc:
             m = QMenu(self)
             m.addAction(icons.icon("play", c, 16), "Play",
-                        lambda: self.actions.play(self.playlist_page.matches(sc)))
+                        lambda: self.actions.play_playlist(self.playlist_page.matches(sc)))
             m.addAction(icons.icon("smart", c, 16), "Edit Rules…",
                         lambda: (self.open_playlist(pid), self.playlist_page.edit_rules()))
             m.addSeparator()
@@ -309,7 +328,7 @@ class MainWindow(QMainWindow):
         if not p:
             return
         m = QMenu(self)
-        m.addAction(icons.icon("play", c, 16), "Play", lambda: self.actions.play(p.tracks))
+        m.addAction(icons.icon("play", c, 16), "Play", lambda: self.actions.play_playlist(p.tracks))
         m.addAction(icons.icon("disc", c, 16), "Put on Shelf", lambda: self.shelf_page.put_playlist(pid))
         m.addAction(icons.icon("pencil", c, 16), "Rename…", lambda: (self.open_playlist(pid), self.playlist_page.rename()))
         m.addSeparator()
@@ -342,6 +361,12 @@ class MainWindow(QMainWindow):
     def settings_changed(self, key: str) -> None:
         if key in ("crossfade", "crossfade_secs"):
             self.playback.apply_settings()
+        elif key in ("tempo_flow", "tempo_strength", "tempo_scope"):
+            pb = self.playback
+            if self.settings["tempo_flow"] and pb.tempo is not None:
+                pb.tempo.request(([pb.current] if pb.current else []) + pb.recommendations, front=True)
+            pb.apply_tempo()
+            self.now_page.show_bpm()
         elif key == "reduce_motion":
             rack_mod.reduce_motion = bool(self.settings["reduce_motion"])
         elif key == "balance_mode" and self.balance is not None:
@@ -356,6 +381,122 @@ class MainWindow(QMainWindow):
                 self.now_page.set_hue(None)
                 if SHELF in self._built:
                     self.shelf_page.set_hue(None)
+
+    # ---- collection health & backups ------------------------------------------------
+
+    def check_health(self) -> None:
+        from aria.ui.widgets.health_dialog import HealthDialog
+        HealthDialog(self).exec()
+
+    def flush_all(self) -> None:
+        """Write every pending change now (before a snapshot)."""
+        for store in (self.settings, self.library, self.playlists, self.shelf, self.playback):
+            store.flush()
+        if self.listening is not None:
+            self.listening.save_now()
+
+    def snapshot_now(self, reason: str = "manual", announce: bool = False):
+        from aria.core import snapshot
+        self.flush_all()
+        try:
+            path = snapshot.create(reason)
+        except OSError as exc:
+            self.toast("danger", "Couldn’t save a snapshot")
+            log.error("Snapshot failed: %s", exc)
+            return None
+        if announce:
+            self.toast("success", "Snapshot saved")
+        return path
+
+    def _auto_snapshot(self) -> None:
+        from aria.core import snapshot
+        if snapshot.due(self.settings["snapshot_every"]):
+            self.snapshot_now("auto")
+
+    def restore_snapshot(self, path) -> None:
+        from aria.core import snapshot
+        from aria.ui.widgets.dialogs import confirm
+        snap = snapshot.read(path)
+        if snap is None:
+            self.toast("danger", "That isn’t an Aria backup")
+            return
+        if not confirm(self, "Restore this snapshot?",
+                       f"{snap.label}. Aria saves the current state first, then restarts with the snapshot.",
+                       "Restore & Restart", danger=True):
+            return
+        self._restart_into(path, "before-restore")
+
+    def _restart_into(self, path, reason: str) -> None:
+        """Snapshot what's here, write the backup's files and start Aria again without saving over them."""
+        import subprocess
+        import sys
+
+        from aria.core import snapshot
+        if self.snapshot_now(reason) is None:
+            return
+        try:
+            snapshot.restore(path)
+        except Exception as exc:
+            log.error("Restore failed: %s", exc)
+            self.toast("danger", "Couldn’t restore that backup")
+            return
+        if self.balance is not None:
+            self.balance.shutdown()
+        self.playback.player.release()
+        if self.tray:
+            self.tray.hide()
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen([sys.executable, "-m", "aria"], cwd=str(paths.ROOT), creationflags=flags, close_fds=True)
+        os._exit(0)                 # skip the usual save on exit: it would write the old data back
+
+    def export_backup(self) -> None:
+        import time
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from aria.core import snapshot
+        from aria.ui.widgets.dialogs import confirm
+        size = sum(p.stat().st_size for p in paths.AUDIO_DIR.glob("*") if p.is_file()) if paths.AUDIO_DIR.exists() else 0
+        title = "Export a full backup?"
+        text = ("Library, playlists, shelf, history, sessions and settings in one file — "
+                "restore it here or on another computer.")
+        if size:
+            ok, audio = confirm(self, title, text, "Choose File…",
+                                option=f"Include downloaded songs ({size / 1_048_576:.0f} MB)")
+        else:
+            ok, audio = confirm(self, title, text, "Choose File…"), False
+        if not ok:
+            return
+        name = f"Aria Backup {time.strftime('%Y-%m-%d')}.zip"
+        dest, _ = QFileDialog.getSaveFileName(self, "Export Backup", name, "Aria Backup (*.zip)")
+        if not dest:
+            return
+        self.flush_all()
+        from aria.core import tasks
+        from pathlib import Path
+        self.status.set_job("Exporting backup")
+        tasks.run(lambda: snapshot.create("manual", Path(dest), include_audio=audio),
+                  lambda _p: (self.status.set_job(None), self.toast("success", "Backup exported")),
+                  lambda e: (self.status.set_job(None), self.toast("danger", "Couldn’t export the backup")))
+
+    def import_backup(self) -> None:
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from aria.core import snapshot
+        from aria.ui.widgets.dialogs import confirm
+        src, _ = QFileDialog.getOpenFileName(self, "Import Backup", "", "Aria Backup (*.zip)")
+        if not src:
+            return
+        snap = snapshot.read(Path(src))
+        if snap is None:
+            self.toast("danger", "That isn’t an Aria backup")
+            return
+        if confirm(self, "Replace your data with this backup?",
+                   f"{snap.label}. What's here now is saved as a snapshot first; Aria then restarts.",
+                   "Import & Restart", danger=True):
+            self._restart_into(Path(src), "import")
 
     def clear_cache(self) -> None:
         """Ask, then empty data/cache in the background (library and downloads stay)."""
@@ -390,6 +531,25 @@ class MainWindow(QMainWindow):
 
     def _nudge_volume(self, delta: int) -> None:
         self.player_bar.set_volume(self.playback.player.volume + delta)
+
+    # ---- immersive mode --------------------------------------------------------
+
+    def toggle_immersive(self) -> None:
+        """Full-screen listening (F11). The music carries on either way."""
+        if self.immersive is not None and self.immersive.isVisible():
+            self.immersive.close()
+            return
+        if self.immersive is None:
+            from aria.ui.immersive import ImmersiveView
+            self.immersive = ImmersiveView(self.playback, self.settings, self.now_page.lyrics)
+            self.immersive.closed.connect(self._immersive_closed)
+        self.now_page._load_lyrics()               # make sure lyrics are on their way
+        self.immersive.enter(self.screen())
+
+    def _immersive_closed(self) -> None:
+        if self.isVisible():
+            self.raise_()
+            self.activateWindow()
 
     # ---- quick actions -------------------------------------------------------
 
@@ -440,6 +600,7 @@ class MainWindow(QMainWindow):
             Command("Discovery: Unexpected", "compass", lambda: discovery(100), "", "recommend dial new explore"),
             Command("Refresh Recommendations", "refresh", lambda: pb.refresh_recommendations(force=True), "",
                     "for you"),
+            Command("Immersive Mode", "expand", self.toggle_immersive, "F11", "full screen fullscreen lyrics"),
             Command("Show Lyrics", "music", lambda: (self.go(NOW), np.tabs.set_index(3, emit=True)), "", "words"),
             Command("Listening Sessions", "clock", self._show_sessions, "", "history session"),
             Command("Shuffle Queue", "shuffle", pb.shuffle, "", "random", lambda: len(pb.queue) > 1),
@@ -457,6 +618,9 @@ class MainWindow(QMainWindow):
             Command("Open Settings", "settings", lambda: self.go(SETTINGS), "Ctrl+,", "preferences options"),
             Command("Open Console", "terminal", lambda: self.go(CONSOLE), "Ctrl+5", "log commands"),
             Command("Clear Cache", "trash", self.clear_cache, "", "delete free space covers lyrics"),
+            Command("Check Library", "check-circle", self.check_health, "", "collection health duplicates missing"),
+            Command("Back Up Now", "export", lambda: self.snapshot_now("manual", announce=True), "",
+                    "snapshot backup save"),
             Command("Open Downloads Folder", "folder",
                     lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))), "", "files"),
             Command("Change Appearance", "moon", self._cycle_appearance, "", "theme dark light"),
@@ -473,6 +637,15 @@ class MainWindow(QMainWindow):
             self.shelf_page.detail.list.set_playing(key)
         self.setWindowTitle(f"{track.title} — Aria" if track else "Aria")
         self._update_status()
+
+    def _on_measuring(self, done: int, total: int) -> None:
+        """Arrange by Tempo: a progress bar in the status bar while BPMs are measured."""
+        if total and done < total:
+            self.status.set_job(f"Measuring tempo {done}/{total}", done / total)
+        elif not self.downloader.busy:
+            self.status.set_job(None)
+            if total:
+                self.toast("success", "Queue arranged by tempo")
 
     def _on_mode(self) -> None:
         if self.playback.timer is not None:

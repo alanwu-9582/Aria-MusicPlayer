@@ -484,9 +484,9 @@ class AlbumView(QWidget):
             return
         tracks = tracks_of(a)
         if a.kind == "album" and not a.playlist_id:
-            self.actions.play_album(tracks, a.title, row)
+            self.actions.play_album(tracks, a.title, row)       # Album Integrity: always the album's order
         else:
-            self.actions.play(tracks[row:])
+            self.actions.play_playlist(tracks[row:])
 
     def _shuffle(self) -> None:
         if self.album:
@@ -618,7 +618,6 @@ class ShelfPage(TintedPage):
         self.count = label("", "Caption")
         self.header.addWidget(self.count)
         self.display = Segmented(["Cover", "Spine"], compact=True)
-        self.display.setToolTip("Covers facing out, or spines side by side")
         self.header.addWidget(self.display)
 
         self.stack = QStackedWidget()
@@ -652,6 +651,7 @@ class ShelfPage(TintedPage):
         self.detail.back.connect(self.close_album)
         shelf.changed.connect(self._update_count)
         shelf.changed.connect(lambda: self._view == 2 and self._sync_spines())
+        actions.library.track_updated.connect(lambda _k: self._view == 2 and self._sync_spines())
         playlists.changed.connect(lambda: shelf.sync_playlists(playlists))
         playlists.playlist_changed.connect(self._playlist_edited)
         thumbs_mod.instance().ready.connect(lambda _k: self._update_tint())
@@ -675,7 +675,10 @@ class ShelfPage(TintedPage):
         items = []
         for a in self.shelf.albums:
             kind = "playlist" if a.kind == "playlist" else "album"
-            items.append(RackItem(key=a.id, title=a.title, subtitle=a.artist or subtitle(a), kind=kind,
+            tracks = tracks_of(a)
+            have = sum(1 for t in tracks if self.actions.local_path_of(t))
+            offline = "full" if tracks and have == len(tracks) else "partial" if have else "none"
+            items.append(RackItem(key=a.id, title=a.title, subtitle=a.artist or subtitle(a), kind=kind, offline=offline,
                                   tooltip=" — ".join(x for x in (a.title, subtitle(a)) if x),
                                   cover=(lambda a=a: _tile(a, 190, 0.0, dpr))))
         keep = self.spines.items[self.spines.selected].key if 0 <= self.spines.selected < len(self.spines.items) else None
@@ -723,7 +726,10 @@ class ShelfPage(TintedPage):
             return
         m = QMenu(self)
         c = theme.color("label")
-        m.addAction(icons.icon("play", c, 16), "Play", lambda: self.actions.play(tracks_of(a)))
+        is_album = a.kind == "album" and not a.playlist_id
+        m.addAction(icons.icon("play", c, 16), "Play",
+                    lambda: self.actions.play_album(tracks_of(a), a.title) if is_album
+                    else self.actions.play_playlist(tracks_of(a)))
         m.addAction(icons.icon("queue-add", c, 16), "Add to Queue", lambda: self.actions.enqueue(tracks_of(a)))
         m.addAction(icons.icon("disc", c, 16), "Open", lambda: self.open_album(a.id))
         m.addSeparator()

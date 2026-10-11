@@ -128,6 +128,13 @@ class TrackActions:
         if len(tracks) > 1:
             self.pb.enqueue(tracks[1:], play_next=True)
 
+    def play_playlist(self, tracks: list[Track]) -> None:
+        """A user's playlist: arranged by beat when Tempo Flow covers playlists, else as listed."""
+        if len(tracks) > 2 and self.pb.flows_playlists():
+            self.pb.play_flow(tracks)
+        else:
+            self.play(tracks)
+
     def play_album(self, tracks: list[Track], title: str, start: int = 0) -> None:
         """Album mode: in order, gapless, no recommendations until it's over."""
         if tracks:

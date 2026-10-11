@@ -63,18 +63,18 @@ class PlaylistPage(Page):
             RowAction("heart", "Save", lambda r: actions.toggle_saved(self.list.tracks()[r]), saved),
         ]
         self.list.actions = self._own_actions
-        self.list.activated_row.connect(lambda r: actions.play(self.list.tracks()[r:]))
+        self.list.activated_row.connect(lambda r: actions.play_playlist(self.list.tracks()[r:]))
         self.list.delete_pressed.connect(lambda rows: self.smart_id is None and self._remove(rows))
         self.list.moved.connect(lambda s, d: self.pid and playlists.move(self.pid, s, d))
         self.list.context_requested.connect(self._menu)
 
         self.rack = RackView()
         self.rack_panel = RackPanel(self.rack, ("list", "Nothing here yet", ""))
-        self.rack.activated.connect(lambda i: actions.play(self.list.tracks()[i:]))
+        self.rack.activated.connect(lambda i: actions.play_playlist(self.list.tracks()[i:]))
         self.rack.context.connect(lambda i, pos: self._menu([i], pos))
         self.rack.selection_changed.connect(self._rack_selected)
         strip = self.rack_panel.detail
-        for icon, tip, fn in (("play", "Play from Here", lambda: self._rack_do(lambda ts, i: actions.play(ts[i:]))),
+        for icon, tip, fn in (("play", "Play from Here", lambda: self._rack_do(lambda ts, i: actions.play_playlist(ts[i:]))),
                               ("queue-add", "Add to Queue", lambda: self._rack_do(lambda ts, i: actions.enqueue([ts[i]])))):
             b = IconButton(icon, tip, tone="secondary")
             b.clicked.connect(fn)
@@ -89,7 +89,7 @@ class PlaylistPage(Page):
             self.view_toggle.set_index(1)
             self.stack.setCurrentIndex(1)
 
-        self.play_btn.clicked.connect(lambda: actions.play(self.list.selected_tracks() or self.list.tracks()))
+        self.play_btn.clicked.connect(lambda: actions.play_playlist(self.list.selected_tracks() or self.list.tracks()))
         self.shuffle_btn.clicked.connect(self._shuffle)
         self.queue_btn.clicked.connect(lambda: actions.enqueue(self.list.selected_tracks() or self.list.tracks()))
         playlists.playlist_changed.connect(lambda pid: pid in (self.pid, self.smart_id) and self.refresh())
@@ -101,6 +101,7 @@ class PlaylistPage(Page):
         self._smart_timer.setInterval(400)
         self._smart_timer.timeout.connect(lambda: self.smart_id and self.refresh())
         if library is not None:
+            library.track_updated.connect(lambda _k: self.stack.currentIndex() == 1 and self._sync_rack())
             library.changed.connect(self._smart_timer.start)
             library.track_updated.connect(lambda _k: self._smart_timer.start())
         if listening is not None:
@@ -179,7 +180,7 @@ class PlaylistPage(Page):
     def _sync_rack(self, keep: str | None = None) -> None:
         if keep is None and 0 <= self.rack.selected < len(self.rack.items):
             keep = self.rack.items[self.rack.selected].key
-        self.rack.set_items(track_items(self.list.tracks()), keep)
+        self.rack.set_items(track_items(self.list.tracks(), self.actions.local_path_of), keep)
         self._rack_selected(self.rack.selected)
 
     def _rack_selected(self, i: int) -> None:
@@ -189,8 +190,9 @@ class PlaylistPage(Page):
             strip.hide()
             return
         t = tracks[i]
+        from aria.ui.widgets.rack import STATUS_TEXT
         bits = [t.artist, format_duration(t.duration) if t.duration else "", t.source_label,
-                f"{i + 1} of {len(tracks)}"]
+                STATUS_TEXT[self.rack.items[i].offline], f"{i + 1} of {len(tracks)}"]
         strip.show_item(self.rack.items[i].cover(), t.title, " · ".join(b for b in bits if b))
         strip.show()
 

@@ -20,7 +20,7 @@ import os
 import sys
 from ctypes import wintypes
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from aria import paths
 from aria.core.storage import read_json, write_json
@@ -111,6 +111,9 @@ try:                                       # Windows Core Audio through comtypes
             COMMETHOD([], HRESULT, "Activate", (["in"], ctypes.POINTER(GUID), "iid"),
                       (["in"], wintypes.DWORD, "dwClsCtx"), (["in"], ctypes.c_void_p, "pActivationParams"),
                       (["out"], ctypes.POINTER(ctypes.POINTER(IUnknown)), "ppInterface")),
+            COMMETHOD([], HRESULT, "OpenPropertyStore", (["in"], wintypes.DWORD, "stgmAccess"),
+                      (["out"], ctypes.POINTER(ctypes.c_void_p), "ppProperties")),
+            COMMETHOD([], HRESULT, "GetId", (["out"], ctypes.POINTER(ctypes.c_wchar_p), "ppstrId")),
         ]
 
     class IMMDeviceCollection(IUnknown):
@@ -157,10 +160,18 @@ def _process_name(pid: int) -> str:
         k32.CloseHandle(h)
 
 
+DEAD_ZONE = 0.06               # a nudge off the middle does nothing
+
+
 def gain(v: float) -> float:
-    """Volume multiplier for the side being turned down at balance strength ``v`` (0 … 1)."""
+    """Volume multiplier for the side being turned down at balance strength ``v`` (0 … 1).
+    The cut grows with the square of the distance from the middle, so small moves stay
+    subtle and the strong cuts are kept for the ends (¼ way ≈ -1 dB, ½ ≈ -5 dB, end -24 dB)."""
     v = max(0.0, min(1.0, v))
-    return 1.0 if v <= 0 else 10 ** (-MAX_DB * v / 20)
+    if v <= DEAD_ZONE:
+        return 1.0
+    t = (v - DEAD_ZONE) / (1 - DEAD_ZONE)
+    return 10 ** (-MAX_DB * t * t / 20)
 
 
 def _devices() -> list:
@@ -171,6 +182,18 @@ def _devices() -> list:
         return [coll.Item(i) for i in range(coll.GetCount())]
     except Exception:
         return [enum.GetDefaultAudioEndpoint(0, 1)]
+
+
+def default_output_guid() -> str:
+    """GUID of Windows' current default output ("{…}", upper case — the id DirectSound uses), or ""."""
+    if not AVAILABLE:
+        return ""
+    try:
+        enum = comtypes.CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_ALL)
+        ident = enum.GetDefaultAudioEndpoint(0, 1).GetId()        # "{0.0.0.00000000}.{guid}"
+        return ident.rsplit(".", 1)[-1].upper()
+    except Exception:
+        return ""
 
 
 def _sessions() -> list[tuple[int, str, object, str]]:
@@ -209,6 +232,8 @@ def _device_sessions(sessions) -> list[tuple[int, str, object, str]]:
 class VolumeBalance(QObject):
     """Applies the balance; other apps are re-checked every few seconds while it leans to Aria."""
 
+    changed = Signal(float)
+
     def __init__(self, settings, player):
         super().__init__()
         self.settings = settings
@@ -233,6 +258,7 @@ class VolumeBalance(QObject):
         v = max(-1.0, min(1.0, v))
         if abs(v) < 0.03:
             v = 0.0                                 # the middle snaps
+        moved = abs(float(self.settings["balance"] or 0) - v) > 1e-4
         self.settings["balance"] = round(v, 3)
         self.player.set_balance_gain(gain(-v))
         if v > 0 and self.available:
@@ -241,6 +267,8 @@ class VolumeBalance(QObject):
         else:
             self._timer.stop()
             self.restore()
+        if moved:
+            self.changed.emit(v)
 
     def apps(self) -> list[str]:
         """Apps with sound right now (exe names), Aria itself left out."""

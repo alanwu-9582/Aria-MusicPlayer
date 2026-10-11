@@ -48,9 +48,12 @@ class Playback(QObject):
     volume_changed = Signal(int)
     file_deleted = Signal(str)                # key whose downloaded file was deleted later
     mode_changed = Signal()                   # album mode / listening timer started or ended
+    arrange_progress = Signal(int, int)       # Arrange by Tempo: songs measured, songs to measure (0, 0 = done)
 
     def __init__(self, settings, legacy_queue: list[Track] | None = None):
         super().__init__()
+        self._resume_at: tuple[str, float] | None = None   # (song, seconds) to continue from
+        self._resume_playing = False
         self.settings = settings
         self.player = Player(settings["volume"])
         self.recommender = Recommender(providers.youtube, providers.spotify)
@@ -83,7 +86,18 @@ class Playback(QObject):
         self._pools: list | None = None           # last radios, so the Discovery dial re-ranks offline
         self._pool_seeds: list[Track] = []
         self._rank = tasks.Latest()
+        self.tempo = None                         # set by the app: BPM cache / analyser (Tempo Flow)
+        self._recs_base: list[Track] = []         # recommendations in relevance order (before Tempo Flow)
+        self._flow_order: list[str] = []          # a playlist being played with Tempo Flow: its own order (keys)
+        self._tempo_timer = QTimer(self)          # BPMs arrive one by one: reorder once they settle
+        self._tempo_timer.setSingleShot(True)
+        self._tempo_timer.setInterval(400)
+        self._tempo_timer.timeout.connect(self.apply_tempo)
         self._pending_delete: dict[str, str] = {}   # key → file to delete once it's no longer playing
+        self._queue_undo: list[Track] | None = None  # the queue before "Arrange by Tempo"
+        self._flow_forced = False                    # the user asked for the queue to be arranged by beat
+        self._measuring: set[str] = set()            # songs Arrange by Tempo is still waiting for
+        self._measure_total = 0
         self._delete_timer = QTimer(self)
         self._delete_timer.setInterval(2000)
         self._delete_timer.timeout.connect(self._try_deletes)
@@ -109,6 +123,11 @@ class Playback(QObject):
         self._queue_recs_timer.timeout.connect(self.refresh_recommendations)
         self.queue_changed.connect(self._queue_recs_timer.start)
         self.queue_changed.connect(self._check_armed)
+        # Remember the moment regularly, so even an unexpected exit resumes close to it.
+        self._position_saver = QTimer(self)
+        self._position_saver.setInterval(10_000)
+        self._position_saver.timeout.connect(lambda: self.player.state == PLAYING and self.save())
+        self._position_saver.start()
         self.player.advanced.connect(self._on_advanced)
         self.apply_settings()
 
@@ -140,14 +159,44 @@ class Playback(QObject):
         return self._recs_busy
 
     def _snapshot(self) -> dict:
-        queue = ([self.current] if self.current else []) + self.queue
-        return {"queue": [t.to_dict() for t in queue],
+        playing = self.current is not None and self.player.state in (PLAYING, PAUSED)
+        if playing:
+            position = self.player.position()
+        elif self.current and self._resume_at and self._resume_at[0] == self.current.key:
+            position = self._resume_at[1]          # never started this time: keep the remembered moment
+        else:
+            position = 0.0
+        return {"version": 2,
+                "current": self.current.to_dict() if self.current else None,
+                "position": round(position, 1),
+                "was_playing": self.player.state == PLAYING,
+                "queue": [t.to_dict() for t in self.queue],
                 "history": [t.to_dict() for t in self.history[-50:]]}
 
     def _restore(self, legacy_queue: list[Track] | None) -> None:
         data = read_json(paths.SESSION_FILE, {})
         self.queue = legacy_queue if legacy_queue is not None else [Track.from_dict(d) for d in data.get("queue", [])]
         self.history = [Track.from_dict(d) for d in data.get("history", [])]
+        cur = data.get("current") if data.get("version") == 2 else None
+        if cur and legacy_queue is None:
+            # the song Aria was closed on: Play continues from that moment
+            self.current = Track.from_dict(cur)
+            self._resume_at = (self.current.key, float(data.get("position") or 0.0))
+            self._resume_playing = bool(data.get("was_playing"))
+
+    def resume_position(self) -> float:
+        """Where the restored song will continue from (0 when there's none)."""
+        if self.current and self._resume_at and self._resume_at[0] == self.current.key:
+            return self._resume_at[1]
+        return 0.0
+
+    def resume_last(self) -> None:
+        """Called once the window is up: continue the song from where it was, if the setting asks."""
+        if self.settings["resume_on_start"] and self.current and self._resume_at:
+            if not self._resume_playing:
+                self._pause_on_start = True       # it was paused: come back paused at that moment
+            self._set_current(self.current)       # announce it (sessions, recommendations follow)
+            self._start(self.current)
 
     def save(self) -> None:
         self._saver.schedule()
@@ -170,6 +219,8 @@ class Playback(QObject):
             self.player.resume(SOFT_RESUME_RAMP if self.settings["soft_resume"] and long_pause else 0)
             self._paused_at = None
         elif self.current:
+            if self._resume_at:
+                self._set_current(self.current)   # the song restored from last time starts for real
             self._start(self.current)
         elif self.queue:
             self.next()
@@ -281,6 +332,7 @@ class Playback(QObject):
             self._prefetch()
 
     def remove(self, indices: list[int]) -> None:
+        self._end_arrangement()                   # the user is arranging the queue themselves
         for i in sorted(set(indices), reverse=True):
             if 0 <= i < len(self.queue):
                 del self.queue[i]
@@ -288,6 +340,7 @@ class Playback(QObject):
         self.save()
 
     def move(self, src: int, dst: int) -> None:
+        self._end_arrangement()
         if 0 <= src < len(self.queue) and src != dst:
             item = self.queue.pop(src)
             self.queue.insert(max(0, min(dst, len(self.queue))), item)
@@ -295,6 +348,7 @@ class Playback(QObject):
             self.save()
 
     def reorder(self, keys_in_order: list[int]) -> None:
+        self._end_arrangement()
         """Apply a permutation coming from a drag-and-drop list."""
         if sorted(keys_in_order) == list(range(len(self.queue))):
             self.queue = [self.queue[i] for i in keys_in_order]
@@ -302,12 +356,14 @@ class Playback(QObject):
             self.save()
 
     def shuffle(self) -> None:
+        self._end_arrangement()
         self.end_album()                    # shuffling an album means leaving album order
         random.shuffle(self.queue)
         self.queue_changed.emit()
         self.save()
 
     def clear(self) -> None:
+        self._end_arrangement()
         self.queue.clear()
         self.end_album()
         self.cancel_timer()
@@ -323,6 +379,7 @@ class Playback(QObject):
         if not tracks:
             return
         self.cancel_timer()
+        self._flow_order = []                     # Album Integrity: the album's own order always wins
         if self.current:
             self._push_history(self.current)
         self.album = {"title": title, "keys": [t.key for t in tracks]}
@@ -355,6 +412,7 @@ class Playback(QObject):
         if not tracks:
             return
         self.end_album()
+        self._flow_order = []
         chosen = [t.copy() for t in tracks]
         keys = {t.key for t in chosen}
         if self.current:
@@ -444,11 +502,160 @@ class Playback(QObject):
 
         def done(result: list[Track]):
             if self._rank.is_current(ticket):
-                self.recommendations = result
-                self.recommendations_changed.emit()
+                self._set_recommendations(result)
 
         tasks.run(lambda: assemble(pools, seeds, exclude, 15, **taste), done,
                   lambda e: log.warning("Re-ranking failed: %s", e))
+
+    # ---- tempo flow --------------------------------------------------------------
+
+    def _set_recommendations(self, result: list[Track]) -> None:
+        self._recs_base = list(result)
+        self.recommendations = list(result)
+        if not self.apply_tempo():
+            self.recommendations_changed.emit()
+        if self.tempo is not None and self.settings["tempo_flow"]:
+            self.tempo.request(result)
+
+    def on_tempo_known(self, key: str) -> None:
+        """A BPM was worked out: reorder soon if it matters for what's coming."""
+        if key in self._measuring:
+            self._measuring.discard(key)
+            if self._measuring:
+                self._report_measuring()
+            else:                              # all measured: one last step to 100 %, then the final order
+                self.arrange_progress.emit(self._measure_total, self._measure_total)
+                self._tempo_timer.start()
+        if self._flow_forced and key in self._flow_order:
+            self._tempo_timer.start()
+        elif self.settings["tempo_flow"] and (
+                (self.current and self.current.key == key) or key in self._flow_order
+                or any(t.key == key for t in self.recommendations)):
+            self._tempo_timer.start()
+
+    # ---- tempo flow over a playlist --------------------------------------------
+
+    def _end_arrangement(self) -> None:
+        self._flow_order = []
+        self._flow_forced = False
+        if self._measuring:
+            self._measuring = set()
+            self._report_measuring()
+        if self._queue_undo is not None:
+            self._queue_undo = None
+            self.mode_changed.emit()
+
+    @property
+    def can_undo_arrange(self) -> bool:
+        return self._queue_undo is not None
+
+    def arrange_by_tempo(self) -> int:
+        """Order the whole queue by beat (Tempo Flow's rules), on request and undoable.
+        Songs whose BPM isn't known yet are analysed, and the order is refined as they come in.
+        Returns how many songs already have a BPM."""
+        if self.tempo is None or len(self.queue) < 2:
+            return 0
+        self._queue_undo = list(self.queue)
+        self._flow_order = [t.key for t in self.queue]
+        self._flow_forced = True
+        self._measuring = self.tempo.request(([self.current] if self.current else []) + self.queue, urgent=True)
+        self._measure_total = len(self._measuring)
+        self._report_measuring()
+        self._arrange_flow()
+        self.mode_changed.emit()
+        return sum(1 for t in self.queue if (b := self.tempo.get(t)) and b[1] >= 0.2)
+
+    @property
+    def measuring(self) -> tuple[int, int]:
+        """(measured, total) while Arrange by Tempo waits for BPMs; (0, 0) otherwise."""
+        if not self._measuring or not self._flow_forced:
+            return 0, 0
+        return self._measure_total - len(self._measuring), self._measure_total
+
+    def _report_measuring(self) -> None:
+        self.arrange_progress.emit(*self.measuring)
+
+    def undo_arrange(self) -> None:
+        """Back to the queue as it was (songs played or added since are respected)."""
+        before = self._queue_undo
+        if before is None:
+            return
+        here = {id(t) for t in self.queue}
+        restored = [t for t in before if id(t) in here]
+        restored += [t for t in self.queue if id(t) not in {id(x) for x in restored}]
+        self.queue = restored
+        self._flow_order = []
+        self._flow_forced = False
+        self._queue_undo = None
+        if self._measuring:
+            self._measuring = set()
+            self._report_measuring()
+        self.queue_changed.emit()
+        self.mode_changed.emit()
+        self.save()
+
+    def flows_playlists(self) -> bool:
+        return (self.tempo is not None and bool(self.settings["tempo_flow"])
+                and self.settings["tempo_scope"] == "playlists")
+
+    def play_flow(self, tracks: list[Track]) -> None:
+        """Play a playlist with Tempo Flow: the chosen song first, the rest arranged by beat.
+        Only this play-through is arranged — the saved playlist keeps its order — and the
+        arrangement improves as more BPMs are worked out."""
+        if not tracks:
+            return
+        first, rest = tracks[0], list(tracks[1:])
+        self.end_album()
+        self.play_now(first)
+        self._flow_order = [t.key for t in rest]
+        self.enqueue(rest, play_next=True)
+        self.tempo.request(tracks, front=True)
+        self._arrange_flow()
+
+    def _arrange_flow(self) -> bool:
+        """Re-arrange the playlist's songs still waiting in the queue, in the slots they occupy."""
+        if not self._flow_order or self.tempo is None or not (self._flow_forced or self.flows_playlists()):
+            return False
+        from aria.core.tempo import flow_order
+        rank = {k: i for i, k in enumerate(self._flow_order)}
+        slots = [i for i, t in enumerate(self.queue) if t.key in rank]
+        if len(slots) < 2:
+            return False
+        waiting = sorted((self.queue[i] for i in slots), key=lambda t: rank[t.key])   # the playlist's order
+        start = self.tempo.get(self.current)
+        recent = [b[0] for t in self.history[-6:] if (b := self.tempo.get(t)) and b[1] >= 0.2]
+        arranged = flow_order(waiting, self.tempo.get, start[0] if start and start[1] >= 0.2 else None,
+                              recent, self.settings["tempo_strength"], order_weight=0.15)
+        if [t.key for t in arranged] == [self.queue[i].key for i in slots]:
+            return False
+        for i, t in zip(slots, arranged):
+            self.queue[i] = t
+        self.queue_changed.emit()
+        self.save()
+        return True
+
+    def apply_tempo(self) -> bool:
+        """Reorder the recommendations by beat (Tempo Flow), starting from their relevance order.
+        Only recommendations move — the user's queue is never touched. True when it emitted."""
+        self._arrange_flow()
+        if self.tempo is None or not self.recommendations:
+            return False
+        have = {t.id for t in self.recommendations}
+        base = [t for t in self._recs_base if t.id in have]
+        base += [t for t in self.recommendations if t.id not in {b.id for b in base}]
+        if self.settings["tempo_flow"]:
+            from aria.core.tempo import flow_order
+            start = self.tempo.get(self.current)
+            recent = [b[0] for t in self.history[-6:] if (b := self.tempo.get(t)) and b[1] >= 0.2]
+            ordered = flow_order(base, self.tempo.get, start[0] if start and start[1] >= 0.2 else None,
+                                 recent, self.settings["tempo_strength"])
+        else:
+            ordered = base
+        if [t.id for t in ordered] == [t.id for t in self.recommendations]:
+            return False
+        self.recommendations = ordered
+        self.recommendations_changed.emit()
+        return True
 
     def _taste(self) -> dict:
         return {"history": list(self.history[-200:]),
@@ -500,8 +707,7 @@ class Playback(QObject):
             self._rank.next()                 # a dial re-rank still in flight is now stale
             self._pools, self._pool_seeds = pools, seeds
             self._set_recs_busy(False)
-            self.recommendations = result
-            self.recommendations_changed.emit()
+            self._set_recommendations(result)
             if self.timer is not None and self.timer.get("top_up"):
                 self._top_up_timer()
             if self._autoplay_waiting:
@@ -577,6 +783,9 @@ class Playback(QObject):
 
     def _set_current(self, track: Track | None) -> None:
         self.current = track
+        if track is not None and self.tempo is not None and self.settings["tempo_flow"]:
+            self.tempo.request([track], front=True)
+            self._tempo_timer.start()
         if self.album is not None and (track is None or track.key not in self.album["keys"]):
             self.end_album()                # playing something else leaves album mode
         if self.timer is not None and (track is None or track.key not in self.timer["keys"]):
@@ -622,7 +831,14 @@ class Playback(QObject):
         tasks.run(lambda: providers.stream(track, force=force), done, failed)
 
     def _load(self, track: Track, stream: Stream) -> None:
-        self.player.load(stream)
+        start = 0.0
+        if self._resume_at and self._resume_at[0] == track.key:
+            start = self._resume_at[1]
+        self._resume_at = None
+        if start > 2:
+            self.player.load(stream, start=start, fade_in=1.2)     # pick up where it was, gently
+        else:
+            self.player.load(stream)
         self._set_playing_local(bool(track.local_path) and stream.url == track.local_path)
 
     def _set_playing_local(self, local: bool) -> None:

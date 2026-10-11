@@ -157,3 +157,137 @@ def test_clear_cache_keeps_everything_else(tmp_path, monkeypatch):
     assert cache.clear() >= 2048
     assert cache.size() == 0 and paths.THUMB_DIR.exists() and song.exists()
     assert cache.human(1536) == "1.5 KB"
+
+
+# ---- collection health ------------------------------------------------------------
+
+def test_health_finds_strays_missing_duplicates_and_extra_copies(tmp_path):
+    from aria.core import health
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    kept = audio / "ヨルシカ - 晴る [abcdefghijk].m4a"
+    kept.write_bytes(b"a" * 10)
+    (audio / "ヨルシカ - 晴る [abcdefghijk].webm").write_bytes(b"b" * 10)     # same video twice
+    (audio / "Stray Song [zyxwvutsrqp].m4a").write_bytes(b"c" * 10)            # not in the library
+    lib = [yt("abcdefghijk", "ヨルシカ - 晴る (Official Video)", "ヨルシカ / n-buna Official", local_path=str(kept)),
+           yt("xxxxxxxxxxx", "ヨルシカ - 晴る (Lyrics)", "ヨルシカ / n-buna Official"),             # same song again
+           yt("missingfile", "Gone Song", "Somebody", local_path=str(audio / "gone.m4a"))]
+    issues = health.scan(lib, [], audio)
+    kinds = sorted(i.kind for i in issues)
+    assert kinds == sorted([health.EXTRA_COPY, health.ORPHAN, health.MISSING, health.DUPLICATE])
+    orphan = next(i for i in issues if i.kind == health.ORPHAN)
+    assert orphan.track.id == "zyxwvutsrqp" and orphan.track.source == "youtube"
+    dup = next(i for i in issues if i.kind == health.DUPLICATE)
+    assert dup.keys[0] == "youtube:abcdefghijk"          # the downloaded one is kept
+    extra = next(i for i in issues if i.kind == health.EXTRA_COPY)
+    assert extra.paths == [str(audio / "ヨルシカ - 晴る [abcdefghijk].webm")]
+
+
+def test_health_link_check_reports_failures():
+    from aria.core import health
+
+    def stream(t):
+        if t.id == "dead":
+            raise RuntimeError("Video unavailable")
+
+    found = health.check_links([yt("ok"), yt("dead")], stream)
+    assert [i.keys for i in found] == [["youtube:dead"]]
+
+
+# ---- library snapshot -------------------------------------------------------------
+
+def test_snapshot_round_trip_relinks_downloads(tmp_path, monkeypatch):
+    import json
+
+    from aria.core import snapshot
+    for name, rel in (("DATA_DIR", ""), ("AUDIO_DIR", "audio"), ("LIBRARY_FILE", "library.json"),
+                      ("PLAYLISTS_FILE", "playlists.json"), ("SHELF_FILE", "shelf.json"),
+                      ("SESSION_FILE", "session.json"), ("LISTENING_FILE", "listening.json"),
+                      ("SETTINGS_FILE", "settings.json")):
+        monkeypatch.setattr(paths, name, tmp_path / rel if rel else tmp_path)
+    paths.AUDIO_DIR.mkdir()
+    song = paths.AUDIO_DIR / "A [abcdefghijk].m4a"
+    song.write_bytes(b"x")
+    track = {"source": "youtube", "id": "abcdefghijk", "title": "A", "local_path": "C:/elsewhere/audio/A [abcdefghijk].m4a"}
+    paths.LIBRARY_FILE.write_text(json.dumps({"tracks": [track]}), encoding="utf-8")
+    paths.PLAYLISTS_FILE.write_text(json.dumps({"playlists": [{"name": "P", "tracks": []}]}), encoding="utf-8")
+    snap = snapshot.create("manual")
+    info = snapshot.read(snap)
+    assert info.songs == 1 and info.playlists == 1 and snapshot.snapshots()[0].path == snap
+    paths.LIBRARY_FILE.write_text(json.dumps({"tracks": []}), encoding="utf-8")      # things change…
+    snapshot.restore(snap)                                                            # …and go back
+    restored = json.loads(paths.LIBRARY_FILE.read_text(encoding="utf-8"))["tracks"]
+    assert restored[0]["id"] == "abcdefghijk" and restored[0]["local_path"] == str(song)
+    assert not snapshot.due("off")
+
+
+def test_balance_is_gentle_near_the_middle():
+    from aria.core.balance import gain
+    assert gain(0.05) == 1.0                 # dead zone
+    assert gain(0.25) > 0.85                 # a small move is a small change
+    assert gain(1.0) < 0.07                  # the ends still mean it
+
+
+# ---- tempo flow -------------------------------------------------------------------
+
+def _bpms(mapping):
+    return lambda t: mapping.get(t.id)
+
+
+def test_tempo_distance_treats_half_time_as_close():
+    from aria.core.tempo import tempo_distance
+    assert tempo_distance(70, 140) < 10 < tempo_distance(100, 125)
+
+
+def test_flow_order_prefers_close_beats_but_moves_on():
+    from aria.core.tempo import flow_order
+    bpm = {"a": (92, 0.9), "b": (128, 0.9), "c": (96, 0.9), "d": (140, 0.9),
+           "e": (102, 0.9), "f": (134, 0.9), "g": (112, 0.9), "h": (122, 0.9)}
+    tracks = [yt(k) for k in "abcdefgh"]
+    got = [t.id for t in flow_order(tracks, _bpms(bpm), start=90, recent=[], strength="strong")]
+    assert got[:3] == ["a", "c", "e"]                     # the close ones first
+    jumps = [abs(bpm[x][0] - bpm[y][0]) for x, y in zip(got, got[1:])]
+    assert max(jumps) <= 20                              # no lurching across the range
+    assert sorted(got) == sorted("abcdefgh")             # nothing lost
+
+
+def test_flow_order_leaves_unknown_and_unsure_songs_in_relevance_order():
+    from aria.core.tempo import flow_order
+    tracks = [yt(k) for k in "xyz"]
+    assert [t.id for t in flow_order(tracks, _bpms({}), start=120, recent=[])] == ["x", "y", "z"]
+    unsure = {"x": (60, 0.05), "y": (200, 0.05), "z": (120, 0.05)}
+    assert [t.id for t in flow_order(tracks, _bpms(unsure), start=120, recent=[])] == ["x", "y", "z"]
+
+
+def test_estimate_finds_a_click_track_and_rejects_noise():
+    import numpy as np
+
+    from aria.core.tempo import estimate
+    sr = 11025
+    x = np.zeros(sr * 20)
+    period = int(sr * 60 / 120)
+    for k in range(0, x.size - 400, period):
+        x[k:k + 300] += np.sin(np.arange(300) * 0.9) * np.exp(-np.arange(300) / 60)
+    bpm, conf = estimate(x, sr)
+    assert abs(bpm - 120) < 2 and conf > 0.5
+    rng = np.random.default_rng(1)
+    _bpm, noise_conf = estimate(rng.standard_normal(sr * 20), sr)
+    assert noise_conf < 0.2
+
+
+def test_flow_order_turns_back_gently_at_the_edge():
+    from aria.core.tempo import flow_order
+    bpm = {"p2": (92, 0.9), "p3": (140, 0.9), "p4": (96, 0.9), "p5": (128, 0.9),
+           "p6": (102, 0.9), "p7": (134, 0.9), "p8": (112, 0.9)}
+    tracks = [yt(k) for k in bpm]               # a playlist's own order
+    got = [bpm[t.id][0] for t in flow_order(tracks, _bpms(bpm), start=120, recent=[], strength="strong",
+                                            order_weight=0.15)]
+    assert got[:3] == [128, 134, 140]
+    assert max(abs(a - b) for a, b in zip(got, got[1:])) <= 30     # no 140 → 92 leap
+
+
+def test_flow_order_without_a_starting_beat_starts_from_the_first_known():
+    from aria.core.tempo import flow_order
+    bpm = {"a": (100, 0.9), "b": (150, 0.9), "c": (104, 0.9), "d": (146, 0.9)}
+    got = [t.id for t in flow_order([yt(k) for k in "abcd"], _bpms(bpm), start=None, recent=[], strength="strong")]
+    assert got[:2] == ["a", "c"]                         # the close beats start together

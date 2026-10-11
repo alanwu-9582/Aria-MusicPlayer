@@ -13,6 +13,7 @@ from aria.core.models import Track, format_duration
 from aria.ui import icons
 from aria.ui.theme import font, theme
 from aria.ui.widgets import thumbs as thumbs_mod
+from aria.ui.widgets.controls import SELF_EXPLANATORY
 
 ROW_H = 52
 THUMB_W, THUMB_H = 64, 36
@@ -184,7 +185,10 @@ class TrackDelegate(QStyledItemDelegate):
         if event.type() == QEvent.Type.ToolTip and index.isValid():
             for rect, act in zip(self._action_rects(option.rect.adjusted(0, 1, -2, -1)), self.view.actions):
                 if rect.contains(event.pos()):
-                    QToolTip.showText(event.globalPos(), act.tooltip, view)
+                    if act.icon in SELF_EXPLANATORY:
+                        QToolTip.hideText()     # a heart or an × says it already
+                    else:
+                        QToolTip.showText(event.globalPos(), act.tooltip, view)
                     return True
             # Only when the title doesn't fit in the row.
             t: Track = index.data(TrackRole)
