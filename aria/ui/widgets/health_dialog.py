@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from aria import providers
@@ -23,6 +23,7 @@ ORDER = [health.MISSING, health.BROKEN, health.DUPLICATE, health.EXTRA_COPY, hea
 
 class IssueRow(QFrame):
     fix = Signal(object)
+    link = Signal(object)                    # ORPHAN: pick the library song this file is
 
     def __init__(self, issue: health.Issue):
         super().__init__()
@@ -39,9 +40,14 @@ class IssueRow(QFrame):
         col.addWidget(title)
         col.addWidget(detail)
         lay.addLayout(col, 1)
+        if issue.kind == health.ORPHAN:
+            b = Button("Link to…", "borderless")
+            b.clicked.connect(lambda: self.link.emit(self.issue))
+            lay.addWidget(b)
         btn = Button(issue.fix_label, "borderless")
         btn.clicked.connect(lambda: self.fix.emit(self.issue))
         lay.addWidget(btn)
+        self.link_anchor = btn
 
 
 class HealthDialog(QDialog):
@@ -144,11 +150,35 @@ class HealthDialog(QDialog):
             for issue in group:
                 row = IssueRow(issue)
                 row.fix.connect(lambda i: self._fix_many([i]))
+                row.link.connect(lambda i, r=row: self._link(i, r))
                 lay.addWidget(row)
         lay.addStretch(1)
         self.scroll.setWidget(body)
 
     # ---- fixes -----------------------------------------------------------------
+
+    def _link(self, issue: health.Issue, row) -> None:
+        """A stray download is a library song's file: point that song at it."""
+        from PySide6.QtWidgets import QMenu
+        from aria.core import identity
+        lib = self.w.library
+        m = QMenu(self)
+        for t in health.link_candidates(issue, list(lib.tracks)):
+            title, artist = identity.display(t)
+            has = bool(t.local_path and os.path.exists(t.local_path))
+            text = f"{title} — {artist}" if artist else title
+            m.addAction(text + ("  · has a download" if has else ""),
+                        lambda k=t.key: self._link_to(issue, k))
+        if m.isEmpty():
+            m.addAction("No songs in the Library").setEnabled(False)
+        m.exec(row.mapToGlobal(row.rect().bottomRight()) - QPoint(m.sizeHint().width(), 0))
+
+    def _link_to(self, issue: health.Issue, key: str) -> None:
+        path = issue.paths[0]
+        self.w.library.set_local(key, path)
+        self.w.playlists.set_local(key, path)
+        self.w.toast("success", "Linked to the Library song")
+        self.rescan()
 
     def _fix_many(self, issues) -> None:
         fixed = 0
@@ -166,8 +196,11 @@ class HealthDialog(QDialog):
     def _fix(self, i: health.Issue) -> None:
         w = self.w
         lib, pls, pb, actions = w.library, w.playlists, w.playback, w.actions
-        if i.kind == health.ORPHAN and i.track is not None:
-            lib.add([i.track])
+        if i.kind == health.ORPHAN:
+            from aria.core import lyrics
+            for p in i.paths:
+                os.remove(p)
+                lyrics.remove_sidecars(p)
         elif i.kind == health.MISSING:
             key = i.keys[0]
             t = lib.get(key)

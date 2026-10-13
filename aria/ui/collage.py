@@ -51,7 +51,8 @@ FADE_MS = 300
 CENTRE_SHARE = 0.46              # the middle square: about this much of the screen's height
 ZOOM_MS = 420                    # the camera's move to the next song's tile (ease-out, no overshoot)
 POP = 3.0                        # the hovered tile lifts by this much on every side
-SHAPES = ((1, 1, 6), (2, 1, 5), (1, 2, 5), (2, 2, 6), (3, 2, 2), (2, 3, 2), (3, 3, 1))   # cols, rows, weight
+SHAPES = ((1, 1, 5), (2, 1, 5), (1, 2, 5), (2, 2, 6), (3, 2, 3), (2, 3, 3), (3, 1, 2), (1, 3, 2),
+          (3, 3, 2), (4, 2, 1), (2, 4, 1))                                   # cols, rows, weight
 BIG_PX = 560                     # squares drawn larger than this use the full artwork
 HOLD_MS = 6000                   # longest wait for the new song to start before the wall changes anyway
 BACK = QColor(8, 8, 10)
@@ -93,7 +94,7 @@ def layout(w: int, h: int, want: int = MAX_TILES) -> tuple[list[Tile], QRectF]:
         ccol, crow = round((cx0 - x0) / c), round((cy0 - y0) / c)
         free = [[not (ccol <= x < ccol + k and crow <= y < crow + k) for x in range(ncols)] for y in range(nrows)]
         for big in (2.5, 1.0, 0.35):                    # few … many tiles
-            tiles = _pack(ncols, nrows, c, x0, y0, [row[:] for row in free], random.Random(ncols * 131 + nrows), big)
+            tiles = _pack(ncols, nrows, c, x0, y0, [row[:] for row in free], random.Random(), big)   # a new pattern each time
             # every tile that shows at all needs a song, or the edges go dark
             shown = sum(1 for t in tiles if visible(t.rect, w, h) > 0.04)
             score = abs(shown - want) + (2 * (shown - want) if shown > want else 0)
@@ -111,25 +112,26 @@ def layout(w: int, h: int, want: int = MAX_TILES) -> tuple[list[Tile], QRectF]:
 
 def _pack(cols: int, rows: int, c: float, x0: float, y0: float, free: list[list[bool]], rng: random.Random,
           big: float = 1.0, group: list[list] | None = None) -> list[Tile]:
-    """Fill the free cells, row by row, with rectangles of whole cells (``SHAPES``: simple ratios),
-    the larger ones weighted by ``big``. Cells of different ``group``s never share a rectangle.
-    A 1 × 1 always fits, so nothing is left over."""
+    """Fill the free cells, in a random order, with rectangles of whole cells (``SHAPES``: simple
+    ratios), the larger ones weighted by ``big``. Cells of different ``group``s never share a
+    rectangle. A 1 × 1 always fits, so nothing is left over."""
     tiles: list[Tile] = []
-    for y in range(rows):
-        for x in range(cols):
-            if not free[y][x]:
-                continue
-            g = group[y][x] if group is not None else None
+    order = [(y, x) for y in range(rows) for x in range(cols)]
+    rng.shuffle(order)
+    for y, x in order:
+        if not free[y][x]:
+            continue
+        g = group[y][x] if group is not None else None
 
-            def fits(a: int, b: int) -> bool:
-                return x + a <= cols and y + b <= rows and all(
-                    free[y + j][x + i] and (group is None or group[y + j][x + i] == g) for j in range(b) for i in range(a))
-            options = [(a, b, wt * (big if a * b > 1 else 1.0)) for a, b, wt in SHAPES if fits(a, b)]
-            a, b, _w = rng.choices(options, weights=[o[2] for o in options])[0]
-            for j in range(b):
-                for i in range(a):
-                    free[y + j][x + i] = False
-            tiles.append(Tile(QRectF(x0 + x * c + GAP / 2, y0 + y * c + GAP / 2, a * c - GAP, b * c - GAP), a, b))
+        def fits(a: int, b: int) -> bool:
+            return x + a <= cols and y + b <= rows and all(
+                free[y + j][x + i] and (group is None or group[y + j][x + i] == g) for j in range(b) for i in range(a))
+        options = [(a, b, wt * (big if a * b > 1 else 1.0)) for a, b, wt in SHAPES if fits(a, b)]
+        a, b, _w = rng.choices(options, weights=[o[2] for o in options])[0]
+        for j in range(b):
+            for i in range(a):
+                free[y + j][x + i] = False
+        tiles.append(Tile(QRectF(x0 + x * c + GAP / 2, y0 + y * c + GAP / 2, a * c - GAP, b * c - GAP), a, b))
     return tiles
 
 
@@ -299,6 +301,9 @@ class CollageView(QWidget):
             self._relayout()
         n = len(self.tiles)
         chosen = everyone[:n]
+        if len(chosen) < n:                                  # fewer coming up than places: the library next
+            have = {t.key for t, _s in chosen} | ({cur.key} if cur else set())
+            chosen += [(t, "Library") for t in self._library_order() if t.key not in have][: n - len(chosen)]
         wanted = {t.key: (t, src) for t, src in chosen}
         old = (self.items + [None] * n)[:n]
         new: list = [None] * n
@@ -408,7 +413,7 @@ class CollageView(QWidget):
         grid = [[(gx, gy) in free for gx in range(gx0, gx1)] for gy in range(gy0, gy1)]
         group = [[free.get((gx, gy)) for gx in range(gx0, gx1)] for gy in range(gy0, gy1)]
         packed = _pack(gx1 - gx0, gy1 - gy0, c, ox + gx0 * c, oy + gy0 * c, grid,
-                       random.Random(len(free) * 31 + dx * 7 + dy), 1.0, group)
+                       random.Random(), 1.0, group)
         new: list[tuple[QRectF, bool]] = []
         for t in packed:
             f = _cell(t.rect)

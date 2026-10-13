@@ -425,6 +425,8 @@ def display(track) -> tuple[str, str]:
     if hit is None:
         ident = of(track)
         title = ident.title if ident.sure("title", 0.5) else textnorm.display_title(track.title, track.artist) or track.title
+        if ident.version and ident.version.casefold() not in title.casefold():
+            title = f"{title} ({ident.version})"            # a live take or a cover isn't the song itself
         artist = ident.artist if ident.sure("artist", 0.5) and ident.artist else identity_artist(track)
         if len(_shown) > 500:
             _shown.clear()

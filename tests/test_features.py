@@ -176,7 +176,7 @@ def test_health_finds_strays_missing_duplicates_and_extra_copies(tmp_path):
     kinds = sorted(i.kind for i in issues)
     assert kinds == sorted([health.EXTRA_COPY, health.ORPHAN, health.MISSING, health.DUPLICATE])
     orphan = next(i for i in issues if i.kind == health.ORPHAN)
-    assert orphan.track.id == "zyxwvutsrqp" and orphan.track.source == "youtube"
+    assert orphan.title == "Stray Song" and orphan.paths == [str(audio / "Stray Song [zyxwvutsrqp].m4a")]
     dup = next(i for i in issues if i.kind == health.DUPLICATE)
     assert dup.keys[0] == "youtube:abcdefghijk"          # the downloaded one is kept
     extra = next(i for i in issues if i.kind == health.EXTRA_COPY)

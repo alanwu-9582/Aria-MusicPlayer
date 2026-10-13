@@ -22,7 +22,7 @@ Volume: the slider in the controls, ↑ / ↓, or the mouse wheel away from the 
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QAbstractButton, QGraphicsOpacityEffect, QHBoxLayout, QWidget
 
@@ -170,6 +170,9 @@ class Controls(QWidget):
         self.layout_btn = GlassButton("sidebar", "Switch Layout (V)", 36, 17)
         self.lyrics_btn = GlassButton("list", "Show Lyrics (L)", 36, 17)
         self.lyrics_btn.setCheckable(True)
+        self.save_btn = GlassButton("heart", "Save to Library", 36, 17)
+        self.save_btn.setCheckable(True)
+        self.playlist_btn = GlassButton("queue-add", "Add to Playlist", 36, 17)
         self.prev = GlassButton("previous", "Previous", 44, 18)
         self.play = GlassButton("play", "Play / Pause", 56, 22, solid=True)
         self.next = GlassButton("next", "Next", 44, 18)
@@ -177,9 +180,10 @@ class Controls(QWidget):
         self.mute = GlassButton("volume", "Mute", 36, 17)
         self.volume = GlassSlider(110)
         # left and right groups have the same width, so the transport sits in the middle
-        for b in (self.layout_btn, self.lyrics_btn):
+        for b in (self.layout_btn, self.lyrics_btn, self.save_btn, self.playlist_btn):
             lay.addWidget(b)
-        lay.addSpacing(18 + 110 - 36)
+        # the transport sits in the middle: the left group is padded to the right group's width
+        lay.addSpacing(18 + (36 + 110 + 36 + 10 * 2) - (36 * 4 + 10 * 3))
         for b in (self.prev, self.play, self.next):
             lay.addWidget(b)
         lay.addSpacing(18)
@@ -218,7 +222,7 @@ class Controls(QWidget):
             self.setVisible(False)
 
     def sizeHint(self) -> QSize:
-        return QSize(36 * 2 + (18 + 110 - 36) + 44 * 2 + 56 + 18 + 36 + 110 + 36 + 10 * 8 + (28 if self.pill else 0), 60)
+        return QSize(self.layout().sizeHint().width(), 60)
 
     def show_animated(self, on: bool) -> None:
         target = 1.0 if on else 0.0
@@ -249,6 +253,7 @@ class ImmersiveView(QWidget):
         self._pos = 0.0
         self._len = 0.0
 
+        self.actions = actions
         self.collage = CollageView(self, playback, actions)
         self.collage.hide()
         self.collage_play = GlassButton("pause", "Play / Pause", 32, 15)     # on the middle square's foot
@@ -266,6 +271,10 @@ class ImmersiveView(QWidget):
         c.layout_btn.clicked.connect(self.toggle_layout)
         c.lyrics_btn.clicked.connect(self.toggle_lyrics)
         c.exit_btn.clicked.connect(self.close)
+        c.save_btn.clicked.connect(self._toggle_saved)
+        c.playlist_btn.clicked.connect(self._playlist_menu)
+        if actions is not None:
+            actions.library.changed.connect(self._sync_saved)
         c.lyrics_btn.setChecked(bool(settings["immersive_lyrics"]))
         # volume: the same as everywhere else (player bar, mini player stay in step)
         self._unmuted = playback.player.volume or 70
@@ -293,6 +302,7 @@ class ImmersiveView(QWidget):
         if screen is not None:
             self.setScreen(screen)
             self.setGeometry(screen.geometry())
+        self._sync_saved()
         self.showFullScreen()
         self.raise_()
         self.activateWindow()
@@ -409,6 +419,7 @@ class ImmersiveView(QWidget):
         self._arrange()
 
     def _on_track(self, _t) -> None:
+        self._sync_saved()
         self._arrange()
         self._refill(crossfade=True)
 
@@ -422,6 +433,29 @@ class ImmersiveView(QWidget):
         t = self.pb.current
         if t and self.isVisible() and key == thumbs_mod.instance().key(artwork_urls(t), ART_HEIGHT):
             self._arrange()
+
+    def _toggle_saved(self) -> None:
+        if self.actions is not None and self.pb.current is not None:
+            self.actions.toggle_saved(self.pb.current)
+        self._sync_saved()
+        self._wake()
+
+    def _sync_saved(self) -> None:
+        t = self.pb.current
+        saved = bool(t and self.actions is not None and t.key in self.actions.library)
+        b = self.controls.save_btn
+        b.setChecked(saved)
+        b.setAccessibleName("Remove from Library" if saved else "Save to Library")
+
+    def _playlist_menu(self) -> None:
+        if self.actions is None or self.pb.current is None:
+            return
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        self.actions.fill_playlist_menu(m, [self.pb.current], self)
+        b = self.controls.playlist_btn
+        m.exec(b.mapToGlobal(b.rect().topLeft()) - QPoint(0, m.sizeHint().height() + 6))   # above the bar
+        self._wake()
 
     def _on_state(self, s: str) -> None:
         icon = "pause" if s in (PLAYING, LOADING) else "play"

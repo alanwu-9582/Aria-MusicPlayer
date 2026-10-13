@@ -9,6 +9,7 @@ from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QPoint, QRec
 from PySide6.QtGui import QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import QAbstractItemView, QFrame, QListView, QScrollArea, QStyle, QStyledItemDelegate, QToolTip
 
+from aria.core import identity
 from aria.core.models import Track, format_duration
 from aria.ui import icons
 from aria.ui.theme import font, theme
@@ -50,7 +51,8 @@ class TrackModel(QAbstractListModel):
         if role == TrackRole:
             return t
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.AccessibleTextRole):
-            return f"{t.title} · {t.artist}" if t.artist else t.title
+            name, who = identity.display(t)
+            return f"{name} · {who}" if who else name
         return None
 
     def refresh_key(self, key: str) -> None:
@@ -173,11 +175,12 @@ class TrackDelegate(QStyledItemDelegate):
         p.setFont(font("body", 600 if playing else 400))
         p.setPen(theme.color("accent") if playing else theme.color("label"))
         fm = QFontMetrics(p.font())
+        name, who = identity.display(t)
         p.drawText(QRect(x, r.top() + 7, w, 20), Qt.AlignmentFlag.AlignVCenter,
-                   fm.elidedText(t.title, Qt.TextElideMode.ElideRight, w))
+                   fm.elidedText(name, Qt.TextElideMode.ElideRight, w))
         p.setFont(font("caption"))
         p.setPen(theme.color("secondary"))
-        sub = " · ".join(s for s in (t.artist, t.source_label) if s)
+        sub = " · ".join(s for s in (who, t.source_label) if s)
         p.drawText(QRect(x, r.top() + 27, w, 18), Qt.AlignmentFlag.AlignVCenter,
                    QFontMetrics(p.font()).elidedText(sub, Qt.TextElideMode.ElideRight, w))
 
@@ -193,8 +196,9 @@ class TrackDelegate(QStyledItemDelegate):
             # Only when the title doesn't fit in the row.
             t: Track = index.data(TrackRole)
             room = option.rect.width() - THUMB_W - 140
-            if QFontMetrics(font("body")).horizontalAdvance(t.title) > room:
-                QToolTip.showText(event.globalPos(), t.title, view)
+            name = identity.display(t)[0]
+            if QFontMetrics(font("body")).horizontalAdvance(name) > room:
+                QToolTip.showText(event.globalPos(), name, view)
             else:
                 QToolTip.hideText()
             return True

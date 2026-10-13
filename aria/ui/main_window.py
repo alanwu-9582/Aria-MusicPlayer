@@ -422,6 +422,13 @@ class MainWindow(QMainWindow):
         from aria.ui.widgets.song_info import edit_song_info
         if not edit_song_info(self, track):
             return
+        from aria.ui.widgets.tracklist import TrackListView
+        for view in self.findChildren(TrackListView):       # every list shows the new name
+            view.viewport().update()
+        if self.library_page.rack_mode:
+            self.library_page._sync_rack()
+        if self.playlist_page.isVisible() and self.playlist_page.stack.currentIndex() == 1:
+            self.playlist_page._sync_rack()
         cur = self.playback.current
         if cur is not None and cur.key == track.key:
             self.now_page._on_current(cur)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from aria import paths
 from aria.core import textnorm
-from aria.core.models import BILIBILI, LOCAL, YOUTUBE, Track
+from aria.core.models import LOCAL, Track
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ GROUP_TITLES = {
     BROKEN: "Links that no longer play",
     LYRICS_ONLY: "Lyrics without their song",
 }
-FIX_LABELS = {ORPHAN: "Add to Library", MISSING: "Forget File", DUPLICATE: "Keep One",
+FIX_LABELS = {ORPHAN: "Delete", MISSING: "Forget File", DUPLICATE: "Keep One",
               EXTRA_COPY: "Delete Extra", BROKEN: "Remove", LYRICS_ONLY: "Delete"}
 
 
@@ -50,7 +50,6 @@ class Issue:
     detail: str
     keys: list[str] = field(default_factory=list)      # library songs involved (for DUPLICATE: [keep, *drop])
     paths: list[str] = field(default_factory=list)     # files involved (for EXTRA_COPY: the ones to delete)
-    track: Track | None = None                         # ORPHAN: the song to add
 
     @property
     def fix_label(self) -> str:
@@ -69,18 +68,24 @@ def audio_files(folder: Path | None = None) -> list[Path]:
         return []
 
 
-def track_for_file(path: Path) -> Track:
-    """A library entry for a stray download: the "[id]" in the name says where it came from."""
-    m = _ID_TAG.search(path.stem)
-    title = _ID_TAG.sub("", path.stem).strip() or path.stem
+def link_candidates(issue: Issue, library: list[Track], limit: int = 15) -> list[Track]:
+    """Library songs a stray download may be: those without a download of their own first, then
+    the closest names (and the same video id, when the file name has one)."""
+    if not issue.paths:
+        return []
+    stem = Path(issue.paths[0]).stem
+    m = _ID_TAG.search(stem)
     ident = m.group(1) if m else ""
-    if re.fullmatch(r"[A-Za-z0-9_-]{11}", ident):
-        return Track(source=YOUTUBE, id=ident, title=title, url=f"https://www.youtube.com/watch?v={ident}",
-                     thumbnail=f"https://i.ytimg.com/vi/{ident}/mqdefault.jpg", local_path=str(path))
-    if re.fullmatch(r"BV[0-9A-Za-z]{10}", ident):
-        return Track(source=BILIBILI, id=ident, title=title, url=f"https://www.bilibili.com/video/{ident}",
-                     local_path=str(path))
-    return Track(source=LOCAL, id=str(path), title=title, url=path.as_uri(), local_path=str(path))
+    name = _ID_TAG.sub("", stem).strip() or stem
+    from aria.core import identity
+
+    def score(t: Track) -> tuple:
+        title, artist = identity.display(t)
+        has_file = bool(t.local_path and os.path.exists(t.local_path))
+        sim = max(textnorm.similarity(name, title), textnorm.similarity(name, f"{artist} - {title}"),
+                  textnorm.similarity(name, t.title))
+        return (t.id == ident, not has_file, sim)
+    return sorted((t for t in library if t.source != LOCAL), key=score, reverse=True)[:limit]
 
 
 def _mb(n: int) -> str:
@@ -116,7 +121,7 @@ def scan(library: list[Track], others: list[Track], folder: Path | None = None) 
         if n in used or n in extra:
             continue
         issues.append(Issue(ORPHAN, _ID_TAG.sub("", f.stem).strip() or f.stem,
-                            f"{f.suffix[1:].upper()} · {_mb(f.stat().st_size)}", paths=[str(f)], track=track_for_file(f)))
+                            f"{f.suffix[1:].upper()} · {_mb(f.stat().st_size)}", paths=[str(f)]))
 
     # lyric files whose song isn't there (deleted elsewhere, or never downloaded)
     stems = {_norm(str(f.with_suffix(""))) for f in files}
