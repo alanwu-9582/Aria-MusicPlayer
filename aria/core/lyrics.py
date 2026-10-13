@@ -76,14 +76,15 @@ class Lyrics:
 
     @property
     def word_timed(self) -> bool:
-        return self.sync == SYNCED and any(self.words)
+        """Timed word by word: as found (Word Synced), or estimated by Forced Alignment."""
+        return self.sync in (SYNCED, ALIGNED) and any(self.words)
 
     @property
     def label(self) -> str:
         """The quiet status line: what kind of lyrics these are, and from where."""
         tail = " · Romanized" if self.romanized else ""
         if self.sync == ALIGNED:
-            return "Estimated Sync" + tail
+            return ("Estimated Sync · Word by Word" if self.word_timed else "Estimated Sync") + tail
         if self.sync == SYNCED:
             kind = "Word Synced" if self.word_timed else "Line Synced"
             return (f"{kind} · {self.source}" if self.source else kind) + tail
@@ -183,11 +184,6 @@ def parse_lrc_full(text: str) -> Lyrics:
         wordl.append(words if words and "".join(w[1] for w in words).strip() == plain else
                      ([[w[0], w[1]] for w in words] if words else []))
     return Lyrics(lines, True, trans=trans, roman=roman, words=wordl)
-
-
-def parse_lrc(text: str) -> list[tuple[float, str]]:
-    """Timed original lines (see :func:`parse_lrc_full` for the rest)."""
-    return parse_lrc_full(text).lines
 
 
 def pair_rows(lyr: Lyrics, lang: str = "") -> Lyrics:
@@ -303,9 +299,81 @@ def from_local_file(track: Track) -> Lyrics | None:
             timed = parse_subtitles(raw)
             lyr = Lyrics(timed, True) if timed else None
         if lyr is not None and lyr.lines:
-            lyr.source, lyr.confidence = "Local File", 1.0
+            mine = _ARIA_TAG.search(raw) if ext == ".lrc" else None
+            lyr.source, lyr.confidence = (mine.group(1).strip() if mine else "Local File"), 1.0
             return classify(lyr)
     return None
+
+
+# ---- lyric files beside downloaded songs ------------------------------------------------------
+
+LYRIC_FILES = (".lrc", ".ttml")
+_ARIA_TAG = re.compile(r"^\[re:\s*Aria\s*·\s*([^\]]*)\]", re.MULTILINE)
+
+
+def sidecars(audio_path: str) -> list[str]:
+    """The lyric files (.lrc / .ttml) that belong to a downloaded song (same name)."""
+    import os
+    stem = os.path.splitext(audio_path)[0]
+    return [stem + ext for ext in LYRIC_FILES if os.path.exists(stem + ext)]
+
+
+def remove_sidecars(audio_path: str) -> None:
+    """The song's file went: its lyric files go too."""
+    import os
+    for f in sidecars(audio_path):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def _ours(path: str) -> bool:
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
+            return bool(_ARIA_TAG.search(fh.read(400)))
+    except OSError:
+        return False
+
+
+def _stamp(t: float) -> str:
+    m, s = divmod(max(0.0, t), 60)
+    return f"{int(m):02d}:{s:05.2f}"
+
+
+def to_lrc(lyr: Lyrics, title: str = "", artist: str = "") -> str:
+    """LRC text: word times as <mm:ss.xx>, a translation / romanization as a second line at the same time."""
+    out = [f"[ti:{title}]" if title else "", f"[ar:{artist}]" if artist else "", f"[re:Aria · {lyr.source or 'LRCLIB'}]"]
+    for i, (t, text) in enumerate(lyr.lines):
+        if t is None:
+            continue
+        tag = f"[{_stamp(t)}]"
+        words = lyr.words[i] if i < len(lyr.words) else []
+        out.append(tag + ("".join(f"<{_stamp(w)}>{piece}" for w, piece in words) if words else text))
+        for extra in (lyr.trans[i] if i < len(lyr.trans) else "", lyr.roman[i] if i < len(lyr.roman) else ""):
+            if extra:
+                out.append(tag + extra)
+    return "\n".join(x for x in out if x) + "\n"
+
+
+def write_beside(track: Track, lyr: Lyrics | None, replace: bool = False) -> str | None:
+    """Keep found synced lyrics as a .lrc next to the downloaded song (never over the
+    listener's own lyric file; ``replace`` only rewrites one Aria wrote)."""
+    import os
+    path = track.local_path
+    if not path or not os.path.exists(path) or lyr is None or lyr.sync != SYNCED or lyr.source == "Local File":
+        return None
+    target = os.path.splitext(path)[0] + ".lrc"
+    have = sidecars(path)
+    if have and not (replace and all(_ours(f) for f in have)):
+        return None
+    ident = identity.of(track)
+    try:
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(to_lrc(lyr, ident.title, ident.artist))
+    except OSError:
+        return None
+    return target
 
 
 def parse_subtitles(text: str) -> list[tuple[float, str]]:
@@ -382,7 +450,7 @@ def title_variants(track: Track) -> list[str]:
     if track.source != SPOTIFY:
         head = re.split(r"\s*[(\[（【《「]", track.title, maxsplit=1)[0].strip(" -|｜")
         if head:
-            out.append(textnorm.split_song(head, track.artist)[0])
+            out.append(identity.parse(head, track.artist).title)
         out.append(textnorm.core_title(track.title, artist))
     # "Those Bygone Years 那些年": each script on its own too (that's how lyric sites often list it)
     out += _scripts(title)[1:]
@@ -545,12 +613,12 @@ def extract_lyrics(text: str, duration: float = 0.0, title: str = "", artist: st
     if not text:
         return None
     lines = text.replace("\r", "").split("\n")
-    lang = textnorm.language_of(title, artist) if title else ""
+    lang = langid.script_language(f"{title} {artist}") if title else ""
 
     def lang_fit(words: list[str]) -> float:
         if not lang:
             return 0.0
-        mine = textnorm.language_of(" ".join(words[:12]))
+        mine = langid.script_language(" ".join(words[:12]))
         return 1.0 if mine == lang else (-2.0 if lang != "en" and mine == "en" else -0.5)
 
     best: _Candidate | None = None
@@ -591,22 +659,15 @@ def extract_lyrics(text: str, duration: float = 0.0, title: str = "", artist: st
 
 # ---- sources -----------------------------------------------------------------
 
-_CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
-
-
 def _scripts(text: str) -> list[str]:
     """``text``, plus its CJK part and its Latin part when it has both ("胡夏 Xia Hu" → 胡夏, Xia Hu)."""
-    cjk = " ".join(_CJK_RUN.findall(text))
-    latin = _CJK_RUN.sub(" ", text).strip(" -|｜/")
+    cjk = " ".join(langid.cjk_runs(text))
+    latin = langid.without_cjk(text).strip(" -|｜/")
     latin = re.sub(r"\s+", " ", latin)
     out = [text]
     if cjk and re.search(r"[A-Za-z]{2}", latin):
         out += [cjk, latin]
     return out
-
-
-def _is_cjk(text: str) -> bool:
-    return bool(_CJK_RUN.search(text))
 
 
 def _lrclib_candidates(http, track: Track, titles: list[str], artist: str) -> list[dict]:
@@ -629,11 +690,11 @@ def _lrclib_candidates(http, track: Track, titles: list[str], artist: str) -> li
     # lyric sites list a song under one script: pair titles and artists written alike first
     artists = _scripts(artist) if artist else [""]
     pairs = sorted(((v, a) for v in titles for a in artists),
-                   key=lambda va: (_is_cjk(va[0]) != _is_cjk(va[1]), titles.index(va[0]), artists.index(va[1])))
+                   key=lambda va: (langid.has_cjk(va[0]) != langid.has_cjk(va[1]), titles.index(va[0]), artists.index(va[1])))
     searches = [{"track_name": title, "artist_name": artist}] + [{"q": f"{v} {a}".strip()} for v, a in pairs]
     # the CJK names alone ("下雨天Xia Yu Tian" → 下雨天), in simplified characters
-    cjk_title = next((v for v in titles if _is_cjk(v) and not re.search(r"[A-Za-z]{2}", v)), title)
-    cjk_artist = next((a for a in artists if _is_cjk(a) and not re.search(r"[A-Za-z]{2}", a)), artist)
+    cjk_title = next((v for v in titles if langid.has_cjk(v) and not re.search(r"[A-Za-z]{2}", v)), title)
+    cjk_artist = next((a for a in artists if langid.has_cjk(a) and not re.search(r"[A-Za-z]{2}", a)), artist)
     simp = textnorm.simplified(f"{cjk_title} {cjk_artist}".strip())
     if simp != f"{title} {artist}".strip():
         searches.insert(1, {"q": simp})                 # traditional names, simplified listings (and the reverse)
@@ -863,11 +924,11 @@ def cached_alignment(track: Track, plain: Lyrics) -> Lyrics | None:
     path = track.local_path
     if path and os.path.exists(path) and al.get("sig") != aligner.file_signature(path) and not al.get("temp"):
         return None
-    return _aligned(plain, al["lines"], al.get("confidence", 0.0))
+    return _aligned(plain, al["lines"], al.get("confidence", 0.0), al.get("word_times"))
 
 
-def _aligned(plain: Lyrics, lines, confidence: float) -> Lyrics:
-    lyr = Lyrics([(t, s) for t, s in lines], True, plain.source, ALIGNED, confidence)
+def _aligned(plain: Lyrics, lines, confidence: float, word_times=None) -> Lyrics:
+    lyr = Lyrics([(t, s) for t, s in lines], True, plain.source, ALIGNED, confidence, words=word_times or [])
     if len(lines) == len(plain.lines):
         lyr.trans, lyr.roman = list(plain.trans), list(plain.roman)
     lyr.lang, lyr.romanized = plain.lang, plain.romanized
@@ -878,7 +939,7 @@ def save_alignment(track: Track, plain: Lyrics, result: dict) -> Lyrics:
     d = read_cache(track) or {}
     d["aligned"] = dict(result, words=[s for _t, s in plain.lines if s])
     write_cache(track, d)
-    return _aligned(plain, result["lines"], result.get("confidence", 0.0))
+    return _aligned(plain, result["lines"], result.get("confidence", 0.0), result.get("word_times"))
 
 
 # ---- cache + entry point --------------------------------------------------------
@@ -921,8 +982,9 @@ def write_cache(track: Track, data: dict) -> None:
 
 
 def search_lrclib(query: str, track: Track | None = None, limit: int = 20) -> list[dict]:
-    """Choose Lyrics: LRCLIB results for ``query``, each with what the listener needs to pick
-    (synced or plain, length against the song's, language, the first lines). Blocking."""
+    """Choose Lyrics: LRCLIB results for ``query``, each with what the listener needs to pick —
+    the kind (Word Synced / Line Synced / Plain), length against the song's, language — and the
+    lyrics themselves for the preview (parsed here, off the interface). Blocking."""
     from aria.providers import http
     try:
         r = http.session().get(f"{LRCLIB}/search", params={"q": query}, timeout=8)
@@ -933,13 +995,12 @@ def search_lrclib(query: str, track: Track | None = None, limit: int = 20) -> li
     for c in items:
         if not isinstance(c, dict) or c.get("instrumental"):
             continue
-        text = c.get("syncedLyrics") or c.get("plainLyrics") or ""
-        lyr = parse_lrc_full(text) if c.get("syncedLyrics") else Lyrics(_plain(text), False)
-        g = langid.detect_lines([s for _t, s in lyr.lines if s])
+        lyr = lyrics_of(c)
+        kind = "Word Synced" if lyr.word_timed else ("Line Synced" if lyr.synced else "Plain")
         out.append({"id": c.get("id"), "title": c.get("trackName", ""), "artist": c.get("artistName", ""),
                     "album": c.get("albumName") or "", "duration": c.get("duration") or 0,
-                    "synced": bool(c.get("syncedLyrics")), "lang": g.lang, "romanized": bool(g.romanized),
-                    "preview": [s for _t, s in lyr.lines if s][:4],
+                    "synced": lyr.synced, "kind": kind, "lang": lyr.lang, "romanized": lyr.romanized,
+                    "lyrics": lyr, "preview": [s for _t, s in lyr.lines if s][:4],
                     "diff": abs(track.duration - c["duration"]) if track and track.duration and c.get("duration") else None,
                     "raw": c})
     return out
@@ -953,7 +1014,7 @@ def lyrics_of(c: dict) -> Lyrics:
         lyr.confidence = 1.0
     else:
         lyr = Lyrics(_plain(raw.get("plainLyrics") or ""), False, confidence=1.0)
-    lyr.source = "LRCLIB · Chosen"
+    lyr.source = "LRCLIB"
     return classify(lyr)
 
 
@@ -966,11 +1027,20 @@ def choose(track: Track, c: dict | None) -> Lyrics | None:
         d.pop("chosen", None)
         d.pop("v", None)                                  # look again
         write_cache(track, d)
+        if track.local_path:
+            for f in sidecars(track.local_path):          # the file Aria wrote for the old pick goes too
+                if _ours(f):
+                    try:
+                        import os
+                        os.remove(f)
+                    except OSError:
+                        pass
         return None
     lyr = lyrics_of(c)
     store.set_choice(track.key, {"lrclib": c.get("id")})
     d["chosen"] = dict(lyr.to_dict(), id=c.get("id"))
     write_cache(track, d)
+    write_beside(track, lyr, replace=True)
     return lyr
 
 
@@ -995,6 +1065,8 @@ def fetch(track: Track, enhanced: bool, recommender=None, force: bool = False) -
     found = _fetch(track, enhanced, recommender, force)
     if found is not None and found.lang:
         identity.note_lyrics_language(track.key, found.lang, 0.9 if not found.romanized else 0.6)
+    if found is not None and track.local_path:
+        write_beside(track, found)                        # a downloaded song keeps its lyrics with it
     return found
 
 

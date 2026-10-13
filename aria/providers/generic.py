@@ -34,7 +34,6 @@ class YtDlpProvider(Provider):
 
 class SoundCloud(YtDlpProvider):
     source = SOUNDCLOUD
-    searchable = True
 
     def match(self, url: str) -> bool:
         return bool(re.search(r"soundcloud\.com/", url))

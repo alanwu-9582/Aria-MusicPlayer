@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self.sidebar.set_logo(icons.app_logo(24, self.devicePixelRatioF()))
         self.mini = MiniPlayer(playback, settings)
         self.mini.expand.connect(self.bring_back)
+        self.mini.style_changed.connect(self._mini_style_changed)
         self.tray = Tray(self, playback, app_icon) if QSystemTrayIcon.isSystemTrayAvailable() else None
         if self.tray:
             self.tray.show()
@@ -398,6 +399,12 @@ class MainWindow(QMainWindow):
     def _cycle_appearance(self) -> None:
         cur = self.settings["appearance"]
         self.set_appearance(APPEARANCES[(APPEARANCES.index(cur) + 1) % len(APPEARANCES)])
+
+    def _mini_style_changed(self, style: str) -> None:
+        """Picked from the mini player's own menu: Settings shows the same choice."""
+        if SETTINGS in self._built:
+            from aria.ui.mini import STYLES
+            self.settings_page.mini_style.set_index(STYLES.index(style))
 
     def _learn_artists(self) -> None:
         """Artists in the library are evidence when reading a video title (which side is the singer)."""

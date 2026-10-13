@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 JA, ZH, KO, EN, UNKNOWN = "ja", "zh", "ko", "en", ""
 NAMES = {JA: "Japanese", ZH: "Chinese", KO: "Korean", EN: "English", UNKNOWN: "Unknown"}
+LANGUAGES = {JA: "Japanese", ZH: "Chinese", KO: "Korean", EN: "English / Other"}    # smart collection choices
 
 _KANA = re.compile(r"[぀-ヿㇰ-ㇿｦ-ﾟ]")
 _HANGUL = re.compile(r"[가-힯ᄀ-ᇿ㄰-㆏]")
@@ -154,10 +155,42 @@ def detect(text: str) -> Guess:
         return Guess(JA, min(0.9, 0.55 + 0.15 * (ja - zh)), script, also=also, evidence=ev)
     if zh > ja and zh >= 1:
         return Guess(ZH, min(0.95, 0.5 + 0.1 * (zh - ja) + (0.2 if han >= 20 else 0)), script, also=also, evidence=ev)
+    lg = _latin(words) if words else None
+    if lg is not None and lg.romanized:
+        # kanji with its own spelling beside it: "下雨天 Xia Yu Tian" (pinyin) / "…Yoru ni Kakeru" (romaji)
+        return Guess(lg.lang, 0.75, script, also=also, evidence=ev + [f"spelled as {lg.romanized}"])
     if han >= 40:
         # a whole lyric with no kana at all is Chinese (Japanese lyrics always use kana)
         return Guess(ZH, 0.8, script, also=also, evidence=ev + ["long, no kana"])
     return Guess(UNKNOWN, 0.3, script, also=also, evidence=ev + ["kanji alone: ja or zh"])
+
+
+_CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
+
+
+def cjk_runs(text: str) -> list[str]:
+    """The stretches of kana, kanji and Hangul in ``text``."""
+    return _CJK_RUN.findall(text)
+
+
+def without_cjk(text: str) -> str:
+    return _CJK_RUN.sub(" ", text)
+
+
+def has_cjk(text: str) -> bool:
+    return bool(_CJK_RUN.search(text))
+
+
+def script_language(text: str) -> str:
+    """The writing system alone, as a language: kana → ja, Hangul → ko, kanji → zh, else en.
+    Only for comparing two texts' scripts — never as a song's language (kanji isn't Chinese)."""
+    if _KANA.search(text):
+        return JA
+    if _HANGUL.search(text):
+        return KO
+    if _HAN.search(text):
+        return ZH
+    return EN
 
 
 def detect_lines(lines: list[str], limit: int = 40) -> Guess:

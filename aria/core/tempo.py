@@ -24,7 +24,7 @@ import wave
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from aria import paths
-from aria.core import tasks
+from aria.core import tasks, workers
 from aria.core.models import LOCAL, Track
 from aria.core.storage import DebouncedSaver, read_json
 
@@ -233,19 +233,10 @@ def flow_order(tracks: list[Track], bpm_of, start: float | None, recent: list[fl
 
 
 # ---- worker process --------------------------------------------------------------------
-# Resolving a stream (yt-dlp) and decoding are Python- and CPU-heavy; in a thread they would
-# compete with the interface for the interpreter lock and make it stutter. A separate,
-# low-priority process does the work instead.
+# Resolving a stream (yt-dlp) and decoding run in an idle-priority process of their own
+# (:mod:`aria.core.workers`), so the interface never competes with them.
 
-_executor = None
-
-
-def _worker_init() -> None:
-    if os.name == "nt":
-        import ctypes
-        k32 = ctypes.windll.kernel32
-        # IDLE: only spare CPU — and the helpers it starts (yt-dlp's JavaScript runtime) inherit it
-        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00000040)
+_pool = workers.IdleWorker()
 
 
 def analyze_in_worker(track: dict):
@@ -256,27 +247,8 @@ def analyze_in_worker(track: dict):
     return analyze(Track.from_dict(track), providers.stream)
 
 
-def _worker():
-    global _executor
-    if _executor is None:
-        import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor
-        _executor = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
-                                        initializer=_worker_init)
-    return _executor
-
-
 def shutdown_worker() -> None:
-    global _executor
-    if _executor is not None:
-        procs = list(getattr(_executor, "_processes", {}).values())
-        _executor.shutdown(wait=False, cancel_futures=True)
-        for proc in procs:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-        _executor = None
+    _pool.shutdown()
 
 
 # ---- cache + background analysis ------------------------------------------------------
@@ -380,7 +352,7 @@ class TempoLibrary(QObject):
             self._next()
 
         if self.in_process:
-            work = lambda: _worker().submit(analyze_in_worker, t.to_dict()).result(timeout=120)  # noqa: E731
+            work = lambda: _pool.pool().submit(analyze_in_worker, t.to_dict()).result(timeout=120)  # noqa: E731
         else:
             work = lambda: analyze(t, self.stream_fn)  # noqa: E731
         tasks.run(work, done, failed)

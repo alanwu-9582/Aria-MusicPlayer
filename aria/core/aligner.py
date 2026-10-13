@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal
 
 from aria import paths
+from aria.core import workers
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ class ModelManager(QObject):
         self.active = model_id
         self._cancel.clear()
         relay = tasks.Progress(lambda d, t: self.progress.emit(model_id, d, t))
-        self._relay = relay
+        self._relay = relay                      # (kept alive while the download runs)
         # MB (as the sizes elsewhere show them) across the thread boundary: bytes past 2 GB don't fit an int signal
         report = lambda d, t: relay.emit(d >> 20, max(1, t >> 20))  # noqa: E731
 
@@ -207,9 +208,21 @@ def _align(a: str, b: str) -> list[int]:
     return out
 
 
-def match_lines(lines: list[str], words: list[tuple[float, float, str]]) -> tuple[list[float], float] | None:
+_CHUNK = re.compile(r"[A-Za-z0-9'’\-]+\s*|\s+|.\s*", re.DOTALL)
+
+
+def word_chunks(line: str) -> list[str]:
+    """A line in the pieces a fill moves through: a Latin word (with its space), or one CJK
+    character (with any space after it). Joined, they are the line exactly."""
+    return _CHUNK.findall(line)
+
+
+def match_lines(lines: list[str], words: list[tuple[float, float, str]],
+                with_words: bool = False):
     """Line start times for ``lines`` ("" = stanza break, skipped) from timed ``words``, with the
-    share of lyric characters the model heard exactly; None when that is too little to trust."""
+    share of lyric characters the model heard exactly; None when that is too little to trust.
+    ``with_words``: also each sung line's estimated word times, [[start, piece], …] (see
+    :func:`word_chunks`) — the times of the characters the model heard, the rest in between."""
     sung = [ln for ln in lines if ln]
     if len(sung) < 4 or not words:
         return None
@@ -258,22 +271,61 @@ def match_lines(lines: list[str], words: list[tuple[float, float, str]]) -> tupl
     out: list[float] = []
     for t in times:                                 # in order, never two lines at once
         out.append(max(t, out[-1] + 0.3) if out else t)
-    return out, coverage
+    if not with_words:
+        return out, coverage
+    char_time = [t_times[where[k]] + LAG if where[k] >= 0 else None for k in range(len(a))]
+    per_line = []
+    for li, ln in enumerate(sung):
+        start = out[li]
+        end = out[li + 1] if li + 1 < len(out) else start + max(2.0, len(_chars(ln)) * CHAR_TIME)
+        k0 = first.get(li, 0)
+        pieces, at = [], k0
+        stamps: list[float | None] = []
+        for piece in word_chunks(ln):
+            n = len(_chars(piece))
+            hit = next((char_time[k] for k in range(at, at + n) if k < len(char_time) and char_time[k] is not None), None)
+            stamps.append(hit if n else None)
+            pieces.append(piece)
+            at += n
+        # fill the gaps, keep them in order and inside the line
+        span = [i for i, t in enumerate(stamps) if t is not None and start - 0.5 <= t < end]
+        for i in range(len(stamps)):
+            if i in span:
+                continue
+            before = max((j for j in span if j < i), default=None)
+            after = min((j for j in span if j > i), default=None)
+            lo = stamps[before] if before is not None else start
+            hi = stamps[after] if after is not None else end
+            lo_i = before if before is not None else -1
+            hi_i = after if after is not None else len(stamps)
+            stamps[i] = lo + (hi - lo) * (i - lo_i) / max(1, hi_i - lo_i)
+        timed, last = [], start
+        for t, piece in zip(stamps, pieces):
+            t = min(max(t, last, start), end - 0.05)
+            timed.append([round(float(t), 2), piece])
+            last = t
+        if timed:
+            timed[0][0] = round(float(start), 2)         # the fill starts with the line
+        per_line.append(timed)
+    return out, coverage, per_line
 
 
-def timed_lines(lines: list[str], times: list[float]) -> list[tuple[float, str]]:
-    """Put the line starts back among the stanza breaks (a break shares the next line's time)."""
-    out, k, brk = [], 0, False
+def timed_lines(lines: list[str], times: list[float], words: list | None = None):
+    """Put the line starts back among the stanza breaks (a break shares the next line's time).
+    With ``words`` (per sung line) also returns the words per line, [] for the breaks."""
+    out, per, k, brk = [], [], 0, False
     for ln in lines:
         if not ln:
             brk = True
             continue
         if brk and out:
             out.append((times[k], ""))
+            per.append([])
         out.append((times[k], ln))
+        per.append(words[k] if words else [])
         k += 1
         brk = False
-    return out
+    return (out, per) if words is not None else out
 
 
 def file_signature(path: str) -> str:
@@ -284,26 +336,17 @@ def file_signature(path: str) -> str:
 # ---- running it (in the worker process) -------------------------------------------------
 
 _loaded: dict[str, object] = {}
-_executor = None
+_pool = workers.IdleWorker()
 
 
 def worker():
     """One idle-priority process of its own: the model stays loaded between songs."""
-    global _executor
-    if _executor is None:
-        import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor
-        from aria.core import tempo
-        _executor = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
-                                        initializer=tempo._worker_init)
-    return _executor
+    return _pool.pool()
 
 
 def shutdown_worker() -> None:
-    global _executor
-    if _executor is not None:
-        _executor.shutdown(wait=False, cancel_futures=True)
-        _executor = None
+    """Stop it (a model it loaded is released, so its files can be deleted)."""
+    _pool.shutdown()
 
 
 WHISPER_LANG = {"ja": "ja", "zh": "zh", "ko": "ko", "en": "en"}
@@ -349,9 +392,10 @@ def align_file(path: str, lines: list[str], model_id: str, language: str | None 
         condition_on_previous_text=False, beam_size=1,
         initial_prompt=" ".join(sung[:4])[:200])          # the words to listen for
     words = [(w.start, w.end, w.word) for seg in segments for w in (seg.words or [])]
-    found = match_lines(lines, words)
+    found = match_lines(lines, words, with_words=True)
     if found is None:
         return None
-    times, coverage = found
-    return {"lines": timed_lines(lines, times), "confidence": round(coverage, 3),
+    times, coverage, per_line = found
+    timed, per = timed_lines(lines, times, per_line)
+    return {"lines": timed, "word_times": per, "confidence": round(coverage, 3),   # estimated, not sung data
             "sig": file_signature(path), "model": model_id}

@@ -264,9 +264,14 @@ class SettingsPage(Page):
         # ---- window
         win = self._group("Window")
         self.tray = self._toggle("Keep Playing in Tray", "close_to_tray", "Closing the window keeps the music going")
+        from aria.ui.mini import STYLE_NAMES, STYLES
+        self.mini_style = Segmented([STYLE_NAMES[s] for s in STYLES])
+        self.mini_style.set_index(STYLES.index(settings["mini_style"]) if settings["mini_style"] in STYLES else 0)
+        self.mini_style.changed.connect(lambda i: window.mini.set_style(STYLES[i]))
         mini = Button("Mini Player", icon="mini")
         mini.clicked.connect(window.show_mini)
         win.pair(self.tray, mini)
+        win.field("Mini Player Style", self.mini_style)
 
         # ---- data
         data = self._group("Data")

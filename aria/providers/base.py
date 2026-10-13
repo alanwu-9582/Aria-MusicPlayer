@@ -15,7 +15,6 @@ Progress = Callable[[float], None]
 
 class Provider:
     source = ""
-    searchable = False
 
     def match(self, url: str) -> bool:
         """Whether this provider handles ``url``."""

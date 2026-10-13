@@ -18,7 +18,7 @@ from aria.ui.widgets.controls import Button, hbox, label
 from aria.ui.widgets.tracklist import plain_scroll
 
 log = logging.getLogger(__name__)
-ORDER = [health.MISSING, health.BROKEN, health.DUPLICATE, health.EXTRA_COPY, health.ORPHAN]
+ORDER = [health.MISSING, health.BROKEN, health.DUPLICATE, health.EXTRA_COPY, health.ORPHAN, health.LYRICS_ONLY]
 
 
 class IssueRow(QFrame):
@@ -189,6 +189,11 @@ class HealthDialog(QDialog):
             for p in i.paths:
                 if playing and os.path.normcase(p) == os.path.normcase(playing):
                     continue
+                os.remove(p)
+                from aria.core import lyrics
+                lyrics.remove_sidecars(p)
+        elif i.kind == health.LYRICS_ONLY:
+            for p in i.paths:
                 os.remove(p)
         elif i.kind == health.BROKEN:
             lib.remove(i.keys)

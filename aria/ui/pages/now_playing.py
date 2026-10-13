@@ -520,7 +520,7 @@ class NowPlayingPage(TintedPage):
         if t is None:
             return
         from aria.ui.widgets.song_info import choose_lyrics
-        res = choose_lyrics(self, t, bool(self.lyric_prefs.choice(t.key)))
+        res = choose_lyrics(self, t, bool(self.lyric_prefs.choice(t.key)), self.pb)
         if not res:
             return
         kind, c = res

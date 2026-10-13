@@ -88,7 +88,6 @@ def _split_id(track_id: str) -> tuple[str, int]:
 
 class Bilibili(Provider):
     source = BILIBILI
-    searchable = True
 
     def __init__(self):
         self.api = _Client()

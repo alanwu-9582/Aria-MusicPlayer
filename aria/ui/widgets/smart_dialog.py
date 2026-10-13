@@ -8,13 +8,13 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLineEdit, QVBoxLayout, QWidget
 
-from aria.core import smart, textnorm
+from aria.core import langid, smart
 from aria.core.models import SOURCE_LABELS
 from aria.ui.widgets.controls import Button, IconButton, MenuButton, hbox, label
 
 FIELD_KEYS = list(smart.FIELDS)
 UNITS = {"days": "days", "times": "times", "minutes": "min"}
-LANG_KEYS = list(textnorm.LANGUAGES)
+LANG_KEYS = list(langid.LANGUAGES)
 SOURCE_KEYS = ["youtube", "bilibili", "spotify", "soundcloud", "local"]
 
 
@@ -69,7 +69,7 @@ class RuleRow(QWidget):
             edit.textChanged.connect(self._set)
             self.value_box.addWidget(edit, 1)
         elif kind == "language":
-            pick = MenuButton([textnorm.LANGUAGES[k] for k in LANG_KEYS], LANG_KEYS.index(v) if v in LANG_KEYS else 0)
+            pick = MenuButton([langid.LANGUAGES[k] for k in LANG_KEYS], LANG_KEYS.index(v) if v in LANG_KEYS else 0)
             pick.changed.connect(lambda i: self._set(LANG_KEYS[i]))
             self.value_box.addWidget(pick)
         elif kind == "source":

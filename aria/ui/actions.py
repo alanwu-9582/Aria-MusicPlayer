@@ -80,6 +80,8 @@ class TrackActions:
             except OSError:
                 kept += 1
                 continue
+            from aria.core import lyrics
+            lyrics.remove_sidecars(path)
             deleted += 1
             self.library.set_local(t.key, "")
             self.playlists.set_local(t.key, "")

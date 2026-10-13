@@ -4,7 +4,8 @@ The local checks are instant and run without the network:
 - downloaded files that no saved song points to (suggest: add them to the library);
 - saved songs whose downloaded file is gone (suggest: forget the file);
 - the same song saved more than once (suggest: keep one);
-- the same song downloaded more than once (suggest: delete the extra copies).
+- the same song downloaded more than once (suggest: delete the extra copies);
+- lyric files (.lrc / .ttml) left without their song (suggest: delete them).
 Checking that links still play needs the network, so it's a separate, slower step.
 """
 
@@ -28,15 +29,18 @@ AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".webm",
 _ID_TAG = re.compile(r"\[([^\[\]]{6,40})\]\s*$")
 
 ORPHAN, MISSING, DUPLICATE, EXTRA_COPY, BROKEN = "orphan", "missing", "duplicate", "extra_copy", "broken"
+LYRICS_ONLY = "lyrics_only"
+LYRIC_EXTS = {".lrc", ".ttml"}
 GROUP_TITLES = {
     ORPHAN: "Downloaded but not in the Library",
     MISSING: "Missing downloaded files",
     DUPLICATE: "Saved more than once",
     EXTRA_COPY: "Downloaded more than once",
     BROKEN: "Links that no longer play",
+    LYRICS_ONLY: "Lyrics without their song",
 }
 FIX_LABELS = {ORPHAN: "Add to Library", MISSING: "Forget File", DUPLICATE: "Keep One",
-              EXTRA_COPY: "Delete Extra", BROKEN: "Remove"}
+              EXTRA_COPY: "Delete Extra", BROKEN: "Remove", LYRICS_ONLY: "Delete"}
 
 
 @dataclass
@@ -113,6 +117,18 @@ def scan(library: list[Track], others: list[Track], folder: Path | None = None) 
             continue
         issues.append(Issue(ORPHAN, _ID_TAG.sub("", f.stem).strip() or f.stem,
                             f"{f.suffix[1:].upper()} · {_mb(f.stat().st_size)}", paths=[str(f)], track=track_for_file(f)))
+
+    # lyric files whose song isn't there (deleted elsewhere, or never downloaded)
+    stems = {_norm(str(f.with_suffix(""))) for f in files}
+    try:
+        lyric_files = sorted(p for p in (folder or paths.AUDIO_DIR).iterdir()
+                             if p.is_file() and p.suffix.lower() in LYRIC_EXTS)
+    except OSError:
+        lyric_files = []
+    for f in lyric_files:
+        if _norm(str(f.with_suffix(""))) not in stems:
+            issues.append(Issue(LYRICS_ONLY, _ID_TAG.sub("", f.stem).strip() or f.stem,
+                                f"{f.suffix[1:].upper()} · no song file beside it", paths=[str(f)]))
 
     # saved songs whose file has gone
     for t in library:

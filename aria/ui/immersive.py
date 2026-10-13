@@ -30,7 +30,7 @@ from aria.core.models import format_duration
 from aria.core.player import LOADING, PLAYING
 from aria.ui import icons
 from aria.ui.collage import CollageView
-from aria.ui.theme import UI_FAMILIES, radius
+from aria.ui.theme import pixel_font as _font, radius, thin_bar as bar
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets import tint as tint_mod
 from aria.ui.widgets.thumbs import ART_HEIGHT, artwork_urls
@@ -41,20 +41,6 @@ EDITORIAL, GALLERY = "editorial", "collage"       # GALLERY: the Collage layout 
 
 
 SEEK_STEP = 5                  # seconds ←/→ jump
-
-
-def _font(px: int, weight=QFont.Weight.Normal) -> QFont:
-    f = QFont()
-    f.setFamilies(UI_FAMILIES)
-    f.setPixelSize(px)
-    f.setWeight(weight)
-    return f
-
-
-def bar(p: QPainter, r: QRectF) -> None:
-    """A thin line (progress, volume) whose corners keep below a third of its shortest side."""
-    k = radius(r.height() / 2, r.width(), r.height())
-    p.drawRoundedRect(r, k, k)
 
 
 class GlassButton(QAbstractButton):

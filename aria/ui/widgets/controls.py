@@ -6,7 +6,7 @@ import re
 
 from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter
-from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
+from PySide6.QtWidgets import (QAbstractButton, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
                                QToolButton, QWidget)
 
 from aria.ui import icons
@@ -92,19 +92,6 @@ def label(text: str = "", role: str = "", parent: QWidget | None = None, mono: b
     if mono:
         lbl.setFont(font("caption", mono=True))
     return lbl
-
-
-def vline() -> QFrame:
-    """1 px toolbar group divider with 6 px each side (§6.2)."""
-    wrap = QFrame()
-    lay = QHBoxLayout(wrap)
-    lay.setContentsMargins(6, 6, 6, 6)
-    line = QFrame()
-    line.setObjectName("VLine")
-    line.setFixedWidth(1)
-    lay.addWidget(line)
-    wrap.setFixedHeight(ROW)
-    return wrap
 
 
 def hbox(*widgets, spacing: int = 8, margins=(0, 0, 0, 0)) -> QHBoxLayout:

@@ -112,10 +112,6 @@ class Recommender:
                 break
         return out
 
-    def recommend(self, seeds: list[Track], exclude: list[Track], count: int = 10, **taste) -> list[Track]:
-        """Blocking. ``seeds``: most recent first. ``exclude``: everything already heard or queued."""
-        pools = self.fetch(seeds, taste.get("history"), taste.get("library"))
-        return assemble(pools, seeds, exclude, count, **taste)
 
 
 def assemble(pools: list[list[Track]], seeds: list[Track], exclude: list[Track], count: int,

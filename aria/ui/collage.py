@@ -38,8 +38,8 @@ from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAn
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QWidget
 
-from aria.core import textnorm
-from aria.ui.theme import UI_FAMILIES, radius as clamp_radius
+from aria.core import identity, textnorm
+from aria.ui.theme import pixel_font as _font, thin_bar as _bar
 from aria.ui.widgets import rack as rack_mod
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets.thumbs import ART_HEIGHT, artwork_urls
@@ -181,19 +181,6 @@ def _blit(p: QPainter, r: QRectF, pm: QPixmap) -> None:
         sw = w * r.width() / r.height()
         src = QRectF((w - sw) / 2, 0, sw, h)
     p.drawPixmap(r, pm, src)
-
-
-def _bar(p: QPainter, r: QRectF) -> None:
-    k = clamp_radius(r.height() / 2, r.width(), r.height())
-    p.drawRoundedRect(r, k, k)
-
-
-def _font(px: float, weight=QFont.Weight.Normal) -> QFont:
-    f = QFont()
-    f.setFamilies(UI_FAMILIES)
-    f.setPixelSize(max(9, int(px)))
-    f.setWeight(weight)
-    return f
 
 
 class CollageView(QWidget):
@@ -715,7 +702,7 @@ class CollageView(QWidget):
         pad = max(7.0, side * 0.05)
         w = r.width() - 2 * pad
         tf, sf = _font(px, QFont.Weight.DemiBold), _font(px * 0.55)
-        name = textnorm.display_title(t.title, t.artist) or t.title
+        name = identity.display(t)[0]
         fm = QFontMetrics(tf)
         lines = fm.boundingRect(0, 0, int(w), 10_000, Qt.TextFlag.TextWordWrap, name).height()
         two = min(lines, fm.lineSpacing() * 2)
@@ -761,7 +748,6 @@ class CollageView(QWidget):
         tf, af = _font(max(14, c.width() * 0.034), QFont.Weight.DemiBold), _font(max(11, c.width() * 0.024))
         p.setFont(tf)
         p.setPen(QColor(255, 255, 255, 240))
-        from aria.core import identity
         name = identity.display(t)[0] if t else "Nothing playing"
         p.drawText(QRectF(c.left() + pad, c.top() + pad, w, QFontMetrics(tf).height() + 2), Qt.AlignmentFlag.AlignLeft,
                    QFontMetrics(tf).elidedText(name, Qt.TextElideMode.ElideRight, int(w)))

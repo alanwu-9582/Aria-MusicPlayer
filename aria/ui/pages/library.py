@@ -19,7 +19,7 @@ from aria.ui.pages.base import Page
 from aria.ui.theme import theme
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets.controls import Button, IconButton, add_item, hbox, label, menu_below
-from aria.ui.widgets.rack import RackPanel, RackView, track_items
+from aria.ui.widgets.rack import RackPanel, RackView
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import RowAction, TrackListView
 
@@ -76,14 +76,9 @@ class LibraryPage(Page):
         self.rack.selection_changed.connect(self._rack_selected)
         self.rack.reorderable = True
         self.rack.moved.connect(self._rack_moved)
-        strip = self.rack_panel.detail
-        for icon, tip, fn in (("play", "Play", lambda: actions.play(self._targets())),
-                              ("queue-add", "Add to Queue", lambda: actions.enqueue(self._targets())),
-                              ("download", "Download", lambda: actions.download(self._targets()))):
-            b = IconButton(icon, tip, tone="secondary")
-            b.clicked.connect(fn)
-            strip.buttons.addWidget(b)
-        self._rack_dirty = True
+        self.rack_panel.add_buttons((("play", "Play", lambda: actions.play(self._targets())),
+                                     ("queue-add", "Add to Queue", lambda: actions.enqueue(self._targets())),
+                                     ("download", "Download", lambda: actions.download(self._targets()))))
         thumbs_mod.instance().ready.connect(lambda _k: self.rack.isVisible() and self.rack.refresh_covers())
 
         self.stack = QStackedWidget()
@@ -153,25 +148,11 @@ class LibraryPage(Page):
             self.library.move(src, dst)
 
     def _sync_rack(self, keep: str | None = None) -> None:
-        if keep is None and 0 <= self.rack.selected < len(self.rack.items):
-            keep = self.rack.items[self.rack.selected].key
-        self.rack.set_items(track_items(self.list.tracks(), self.actions.local_path_of), keep)
-        self._rack_dirty = False
+        self.rack_panel.sync_tracks(self.list.tracks(), self.actions.local_path_of, keep)
         self._rack_selected(self.rack.selected)
 
     def _rack_selected(self, i: int) -> None:
-        strip = self.rack_panel.detail
-        tracks = self.list.tracks()
-        if not (0 <= i < len(tracks)):
-            strip.hide()
-        else:
-            t = tracks[i]
-            from aria.core.models import format_duration
-            from aria.ui.widgets.rack import STATUS_TEXT
-            bits = [t.artist, format_duration(t.duration) if t.duration else "", t.source_label,
-                    STATUS_TEXT[self.rack.items[i].offline]]
-            strip.show_item(self.rack.items[i].cover(), t.title, " · ".join(b for b in bits if b))
-            strip.show()
+        self.rack_panel.show_track(self.list.tracks(), i)
         self._update_buttons()
 
     # ---- list ----------------------------------------------------------------
@@ -189,8 +170,6 @@ class LibraryPage(Page):
         self.rack.reorderable = not q
         if self.rack_mode:
             self._sync_rack()
-        else:
-            self._rack_dirty = True
         total = len(self.library)
         self.count.setText(f"{len(tracks):,} of {total:,} songs" if q else f"{total:,} song{'s' if total != 1 else ''}")
         self._update_buttons()

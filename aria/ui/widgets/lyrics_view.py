@@ -22,17 +22,13 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from aria.core.lyrics import Lyrics
 from aria.ui.theme import UI_FAMILIES, font, theme
+from aria.ui.widgets.tint import mix as _mix
 from aria.ui.widgets.tracklist import paint_empty
 
 GAP = 12
 STANZA = 14
 FOLLOW_PAUSE = 4.0           # seconds the view stays where the user scrolled it
 EMPHASIS_MS = 240
-
-
-def _mix(a: QColor, b: QColor, t: float) -> QColor:
-    return QColor.fromRgbF(a.redF() + (b.redF() - a.redF()) * t, a.greenF() + (b.greenF() - a.greenF()) * t,
-                           a.blueF() + (b.blueF() - a.blueF()) * t, a.alphaF() + (b.alphaF() - a.alphaF()) * t)
 
 
 class LyricsView(QWidget):
@@ -66,6 +62,7 @@ class LyricsView(QWidget):
         self._layout: list[QRect] = []
         self._main_h: list[int] = []             # per line: the original's height (its translation sits below)
         self._pos = 0.0
+        self.clickable = True                    # a click on a synced line jumps there
         self._hover = -1
         LyricsView._views.add(self)
         self._anim = QVariantAnimation(self)
@@ -263,7 +260,7 @@ class LyricsView(QWidget):
         return -1
 
     def mouseMoveEvent(self, e):
-        i = self._line_at(e.position().toPoint()) if self.lyrics and self.lyrics.synced else -1
+        i = self._line_at(e.position().toPoint()) if self.clickable and self.lyrics and self.lyrics.synced else -1
         if i != self._hover:
             self._hover = i
             self.setCursor(Qt.CursorShape.PointingHandCursor if i >= 0 else Qt.CursorShape.ArrowCursor)
@@ -275,7 +272,7 @@ class LyricsView(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
-        if e.button() != Qt.MouseButton.LeftButton:
+        if e.button() != Qt.MouseButton.LeftButton or not self.clickable:
             return
         i = self._line_at(e.position().toPoint())
         if i >= 0 and self.lyrics and self.lyrics.synced and self.lyrics.lines[i][0] is not None:

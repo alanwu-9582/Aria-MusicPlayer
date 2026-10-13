@@ -77,6 +77,21 @@ def radius(r: float, w: float, h: float) -> float:
     return max(0.0, min(r, min(w, h) / 3 - 0.01))
 
 
+def pixel_font(px: float, weight=QFont.Weight.Normal) -> QFont:
+    """The UI typeface at an exact pixel size (Immersive Mode and Collage size type to the screen)."""
+    f = QFont()
+    f.setFamilies(UI_FAMILIES)
+    f.setPixelSize(max(9, int(px)))
+    f.setWeight(weight)
+    return f
+
+
+def thin_bar(p, r) -> None:
+    """A thin line (progress, volume) whose corners keep below a third of its shortest side."""
+    k = radius(r.height() / 2, r.width(), r.height())
+    p.drawRoundedRect(r, k, k)
+
+
 def parse_color(value: str) -> QColor:
     m = re.fullmatch(r"rgba\((\d+),(\d+),(\d+),([\d.]+)\)", value.replace(" ", ""))
     if m:

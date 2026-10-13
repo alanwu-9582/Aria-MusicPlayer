@@ -62,7 +62,6 @@ def from_entry(e: dict) -> Track | None:
 
 class YouTube(Provider):
     source = YOUTUBE
-    searchable = True
 
     def match(self, url: str) -> bool:
         return bool(video_id(url) or playlist_id(url))

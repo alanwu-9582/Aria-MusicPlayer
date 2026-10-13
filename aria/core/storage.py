@@ -81,6 +81,7 @@ class Settings:
         "align_model": "",          # which downloaded model (data/models/<id>)
         "align_streams": False,     # streamed songs with plain lyrics: download a temporary copy to align
         "mini_pos": "",
+        "mini_style": "solid",      # mini player: solid | glass (Liquid Glass)
         "discovery": 0.5,           # recommendations: 0 familiar … 1 unexpected
         "volume_mode": "volume",    # the player bar slider: volume | balance
         "balance": 0.0,             # Volume Balance: -1 other apps … 0 as is … 1 Aria

@@ -1,9 +1,13 @@
-"""Mini player (always on top) and the system tray icon."""
+"""Mini player (always on top) and the system tray icon.
+
+Two looks (Settings › Window › Mini Player, or right-click it): Solid — the page colour tinted by
+the cover — and Liquid Glass — one flat translucent layer (about 63 % opaque) in the cover's
+colour, so what's behind the window shows through; no gradients, no blur."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal
-from PySide6.QtGui import QPainter, QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import QHBoxLayout, QMenu, QSystemTrayIcon, QVBoxLayout, QWidget
 
 from aria.core.player import LOADING, PLAYING
@@ -16,8 +20,13 @@ from aria.ui.widgets.controls import IconButton
 from aria.ui.widgets.slider import Slider
 
 
+STYLES = ("solid", "glass")
+STYLE_NAMES = {"solid": "Solid", "glass": "Liquid Glass"}
+
+
 class MiniPlayer(QWidget):
     expand = Signal()
+    style_changed = Signal(str)
 
     def __init__(self, playback, settings):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
@@ -90,14 +99,54 @@ class MiniPlayer(QWidget):
         playback.position_changed.connect(self._on_pos)
         thumbs_mod.instance().ready.connect(lambda _k: self._update_hue())
         theme.changed.connect(self.update)
+        theme.changed.connect(self.apply_style)
         self._on_track(playback.current)
         self._on_state(playback.state)
 
     def _on_track(self, t) -> None:
+        from aria.core import identity
         self.cover.set_track(t)
-        self.title.set_full_text(t.title if t else "Aria")
-        self.artist.set_full_text(t.artist if t else "")
+        name, who = identity.display(t) if t else ("Aria", "")
+        self.title.set_full_text(name)
+        self.artist.set_full_text(who)
         self._update_hue()
+
+    # ---- style -----------------------------------------------------------------
+
+    @property
+    def glass(self) -> bool:
+        return self.settings["mini_style"] == "glass"
+
+    def set_style(self, style: str) -> None:
+        if style in STYLES and style != self.settings["mini_style"]:
+            self.settings["mini_style"] = style
+            self.apply_style()
+            self.style_changed.emit(style)
+
+    def apply_style(self) -> None:
+        self._text_colours()
+        self.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.apply_style()
+
+    def _text_colours(self) -> None:
+        """On glass the quiet grey of the artist line would sink into what shows through: it takes
+        the text colour, a little softened, instead."""
+        if self.glass:
+            ink = "rgba(255,255,255,205)" if theme.dark else "rgba(20,20,26,190)"
+            self.artist.setStyleSheet(f"color: {ink};")
+        else:
+            self.artist.setStyleSheet("")
+
+    def contextMenuEvent(self, e):
+        m = QMenu(self)
+        for style in STYLES:
+            act = m.addAction(STYLE_NAMES[style], lambda s=style: self.set_style(s))
+            act.setCheckable(True)
+            act.setChecked(style == self.settings["mini_style"])
+        m.exec(e.globalPos())
 
     def _update_hue(self) -> None:
         t = self.pb.current
@@ -151,19 +200,36 @@ class MiniPlayer(QWidget):
     def mouseDoubleClickEvent(self, e):
         self.expand.emit()
 
+    def _glass_tint(self) -> QColor:
+        """The glass: the cover's colour, livelier than the page tint, a little more opaque than half."""
+        base = self.tint.color("page")
+        if self.tint.hs is None:
+            c = QColor(250, 250, 253) if not theme.dark else QColor(24, 24, 30)
+        else:
+            sat = min(0.45 if not theme.dark else 0.55, base.hslSaturationF() * 2.0 + 0.06)
+            c = QColor.fromHslF(max(0.0, base.hslHueF()), sat, 0.86 if not theme.dark else 0.16)
+        c.setAlpha(160)
+        return c
+
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
-        path.addRoundedRect(r, 12, 12)
-        p.fillPath(path, self.tint.color("page"))
-        p.setPen(theme.color("separator_hex"))
-        p.drawPath(path)
+        if self.glass:
+            path.addRoundedRect(r, 12, 12)
+            p.fillPath(path, self._glass_tint())
+            p.setPen(QColor(255, 255, 255, 60) if theme.dark else QColor(0, 0, 0, 45))
+            p.drawPath(path)
+        else:
+            path.addRoundedRect(r, 12, 12)
+            p.fillPath(path, self.tint.color("page"))
+            p.setPen(theme.color("separator_hex"))
+            p.drawPath(path)
         if self._len > 0:
             track = QRectF(14, self.height() - 6, self.width() - 28, 3)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.color("fill_strong"))
+            p.setBrush(QColor(255, 255, 255, 90) if self.glass else theme.color("fill_strong"))
             p.drawRoundedRect(track, 1, 1)
             p.setBrush(theme.color("accent"))
             p.drawRoundedRect(QRectF(track.left(), track.top(), track.width() * min(1, self._pos / self._len), 3), 1, 1)

@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from aria.core import textnorm
+from aria.core import langid, textnorm
 from aria.core.models import LOCAL, SOURCE_LABELS, Track
 
 DAY = 86400
@@ -72,7 +72,7 @@ def describe(rule: dict) -> str:
     if kind == "minutes":
         return f"{label} {v} min"
     if kind == "language":
-        return f"{label}: {textnorm.LANGUAGES.get(v, v)}"
+        return f"{label}: {langid.LANGUAGES.get(v, v)}"
     if kind == "source":
         return f"{label}: {SOURCE_LABELS.get(v, v)}"
     if kind == "text":
@@ -100,7 +100,7 @@ def _matches(rule: dict, t: Track, saved_at: float | None, stat, now: float) -> 
         lang = identity.of(t).language
         if not lang:
             # the old script rule only where it can't mislead: kanji alone isn't Chinese
-            old = textnorm.language_of(t.title, t.artist)
+            old = langid.script_language(f"{t.title} {t.artist}")
             lang = old if old != "zh" else ""
         return lang == v
     if f == "source":

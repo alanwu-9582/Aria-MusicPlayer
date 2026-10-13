@@ -21,7 +21,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 from aria import paths
 from aria.core import langid, textnorm
@@ -447,7 +447,3 @@ def signature(track) -> str:
     """Changes when the listener corrects the song: lyrics found for the old name are re-checked."""
     user = overrides().get(track.key)
     return json.dumps({k: user[k] for k in sorted(user) if k != "language"}, ensure_ascii=False) if user else ""
-
-
-def as_dict(ident: TrackIdentity) -> dict:
-    return asdict(ident)

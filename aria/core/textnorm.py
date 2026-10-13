@@ -303,30 +303,8 @@ def originality(title: str, channel: str = "") -> float:
     return max(-1.0, min(1.0, score))
 
 
-# ---- language --------------------------------------------------------------------
+# ---- names (reading a whole title into song and artist: :mod:`aria.core.identity`) -------------
 
-_KANA = re.compile(r"[぀-ヿㇰ-ㇿ]")
-_HANGUL = re.compile(r"[가-힯ᄀ-ᇿ]")
-_HAN = re.compile(r"[㐀-䶿一-鿿]")
-LANGUAGES = {"ja": "Japanese", "zh": "Chinese", "ko": "Korean", "en": "English / Other"}
-
-
-def language_of(title: str, artist: str = "") -> str:
-    """Rough language of a song from the scripts in its title and artist: ja | zh | ko | en."""
-    text = f"{title} {artist}"
-    if _KANA.search(text):
-        return "ja"
-    if _HANGUL.search(text):
-        return "ko"
-    if _HAN.search(text):
-        return "zh"
-    return "en"
-
-
-# ---- "Artist - Song" ------------------------------------------------------------------
-
-_SPLIT = re.compile(r"\s+[-–—|｜/]\s+")
-_DECOR = re.compile(r"[\[［(（【][^\]］)）】]*[\]］)）】]")
 _NAME_PIECE = re.compile(r"[㐀-鿿぀-ヿ가-힯]+|[a-z0-9]+")
 
 
@@ -345,22 +323,3 @@ def names_channel(part: str, channel: str) -> float:
         return 0.0
     hit = sum(len(x) for x in pieces if len(x) >= 2 and x in c)
     return hit / total
-
-
-def split_song(title: str, channel: str = "") -> tuple[str, str]:
-    """(song name, artist) behind a video title such as "Artist - Song" or "Song / Artist":
-    the evidence decides which side is the artist (see :mod:`aria.core.identity`)."""
-    from aria.core import identity
-    ident = identity.parse(title, channel)
-    if ident.sure("title", 0.5) and (ident.artist or not channel):
-        return ident.title, ident.artist
-    chan = clean_channel(channel)
-    parts = [x.strip() for x in _SPLIT.split(_DECOR.sub(" ", title)) if x.strip()]
-    if len(parts) >= 2 and chan:
-        scores = [names_channel(x, chan) for x in parts[:2]]
-        i = 0 if scores[0] >= scores[1] else 1
-        if scores[i] >= 0.5:
-            other = parts[1 - i]
-            return display_title(other, parts[i]) or other, re.split(r"\s{2,}", parts[i])[0]
-    artist = artist_of(title, channel) or chan
-    return display_title(title, artist), artist

@@ -1,8 +1,8 @@
-from aria.core.lyrics import check_timeline, extract_lyrics, parse_lrc, parse_subtitles, version_tags
+from aria.core.lyrics import check_timeline, extract_lyrics, parse_lrc_full, parse_subtitles, version_tags
 
 
 def test_parse_lrc_multiple_tags():
-    lines = parse_lrc("[00:12.30]hello\n[00:05.00][00:20.00]chorus\n")
+    lines = parse_lrc_full("[00:12.30]hello\n[00:05.00][00:20.00]chorus\n").lines
     assert [t for t, _ in lines] == [5.0, 12.3, 20.0]
 
 
@@ -124,9 +124,11 @@ def test_alignment_reads_katakana_and_hiragana_alike():
 
 
 def test_artist_and_song_are_told_apart_in_mixed_titles():
-    from aria.core import textnorm
-    assert textnorm.split_song("胡夏 Xia Hu - Those Bygone Years 那些年", "HuXia胡夏") == ("Those Bygone Years 那些年", "胡夏 Xia Hu")
-    assert textnorm.split_song("米津玄師  Kenshi Yonezu  - Lemon", "Kenshi Yonezu  米津玄師") == ("Lemon", "米津玄師")
+    from aria.core import identity
+    a = identity.parse("胡夏 Xia Hu - Those Bygone Years 那些年", "HuXia胡夏")
+    b = identity.parse("米津玄師  Kenshi Yonezu  - Lemon", "Kenshi Yonezu  米津玄師")
+    assert (a.title, a.artist) == ("Those Bygone Years 那些年", "胡夏 Xia Hu")
+    assert (b.title, b.artist) == ("Lemon", "米津玄師")
 
 
 def test_no_one_letter_searches_and_each_script_is_tried():
@@ -147,3 +149,51 @@ def test_lyrics_in_a_script_the_song_cannot_have_are_refused():
     assert not lang_ok(Track(source="youtube", id="c", title="ヨルシカ - 晴る", artist="ヨルシカ"), ["又回到最初的起点", "记忆中你青涩的脸"])
 
 
+
+
+def test_estimated_word_times_rebuild_each_line_in_order():
+    from aria.core import aligner
+    lines = ["夜に駆ける君と", "沈むように溶けてゆく", "Hello there my friend", "二人だけの空が広がる"]
+    words, t = [], 10.0
+    for ln in lines:                                     # a transcript that heard every character, 0.3 s apart
+        for ch in ln.replace(" ", ""):
+            words.append((t, t + 0.25, ch))
+            t += 0.3
+        t += 1.0
+    times, cov, per = aligner.match_lines(lines, words, with_words=True)
+    for ln, ws, start in zip(lines, per, times):
+        assert "".join(piece for _w, piece in ws) == ln             # the pieces are the line exactly
+        assert ws[0][0] == round(start, 2)                          # the fill starts with the line
+        assert all(a[0] <= b[0] for a, b in zip(ws, ws[1:]))        # and moves forward
+    assert [p for _w, p in per[2]] == ["Hello ", "there ", "my ", "friend"]
+
+
+def test_lrc_files_beside_downloads(tmp_path):
+    from aria.core import health, lyrics
+    from aria.core.models import Track
+    song = tmp_path / "Song [abcdefghijk].m4a"
+    song.write_bytes(b"x")
+    t = Track(source="youtube", id="abcdefghijk", title="Song", artist="Me", local_path=str(song))
+    lyr = lyrics.Lyrics([(1.0, "夜に駆ける"), (5.0, "Next")], True, "LRCLIB",
+                        trans=["Racing into the night", ""], words=[[[1.0, "夜に"], [1.6, "駆ける"]], []])
+    written = lyrics.write_beside(t, lyr)
+    back = lyrics.from_local_file(t)
+    assert written and back.source == "LRCLIB" and back.trans[0] == "Racing into the night"
+    assert back.words[0] == [[1.0, "夜に"], [1.6, "駆ける"]]
+    (tmp_path / "Mine [zzzzzzzzzzz].m4a").write_bytes(b"x")
+    own = tmp_path / "Mine [zzzzzzzzzzz].lrc"
+    own.write_text("[00:01.00]my own", encoding="utf-8")
+    mine = Track(source="youtube", id="zzzzzzzzzzz", title="Mine", local_path=str(tmp_path / "Mine [zzzzzzzzzzz].m4a"))
+    assert lyrics.write_beside(mine, lyr, replace=True) is None          # never over the listener's own file
+    (tmp_path / "Gone [yyyyyyyyyyy].lrc").write_text("[00:01.00]x", encoding="utf-8")
+    lonely = [i for i in health.scan([t, mine], [], tmp_path) if i.kind == health.LYRICS_ONLY]
+    assert [i.title for i in lonely] == ["Gone"]
+    lyrics.remove_sidecars(str(song))
+    assert not (tmp_path / "Song [abcdefghijk].lrc").exists()
+
+
+def test_aligned_lyrics_with_estimated_words_say_so():
+    from aria.core import lyrics
+    plain = lyrics.Lyrics([(None, "a b")], False, "LRCLIB")
+    al = lyrics._aligned(plain, [(1.0, "a b")], 0.8, [[[1.0, "a "], [1.4, "b"]]])
+    assert al.word_timed and al.label == "Estimated Sync · Word by Word"

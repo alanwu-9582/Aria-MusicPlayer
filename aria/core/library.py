@@ -93,7 +93,9 @@ class Library(QObject):
                 try:
                     os.remove(t.local_path)
                 except OSError:
-                    pass
+                    continue
+                from aria.core import lyrics
+                lyrics.remove_sidecars(t.local_path)
         self._changed()
 
     def update(self, track: Track) -> None:
@@ -235,4 +237,15 @@ class Downloader(QObject):
             log.error("↓ Failed “%s”: %s", track.title, exc)
             self._next()
 
-        tasks.run(lambda: providers.download(track, report), done, failed)
+        def work() -> str:
+            path = providers.download(track, report)
+            try:                                         # its lyrics, as a .lrc beside it (when synced ones exist)
+                from aria.core import lyrics
+                beside = track.copy()
+                beside.local_path = path
+                lyrics.fetch(beside, False)
+            except Exception as exc:
+                log.warning("No lyrics file for “%s”: %s", track.title, exc)
+            return path
+
+        tasks.run(work, done, failed)

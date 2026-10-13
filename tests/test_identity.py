@@ -120,7 +120,7 @@ def test_ttml_and_local_files(tmp_path):
 
 
 def test_short_romaji_and_kanji_titles_are_not_chinese(tmp_path):
-    from aria.core import identity, langid, smart, textnorm
+    from aria.core import identity, langid, smart
     from aria.core.models import Track
     for w in ("Yakimochi", "Yorushika", "Mai Kuraki", "Kenshi Yonezu"):
         g = langid.detect(w)

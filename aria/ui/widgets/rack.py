@@ -724,6 +724,33 @@ class RackPanel(QWidget):
         self.detail.hide()
         lay.addWidget(self.detail)
 
+    def add_buttons(self, specs) -> None:
+        """Icon buttons on the detail strip: (icon, tip, callback) each."""
+        from aria.ui.widgets.controls import IconButton
+        for icon, tip, fn in specs:
+            b = IconButton(icon, tip, tone="secondary")
+            b.clicked.connect(fn)
+            self.detail.buttons.addWidget(b)
+
+    def sync_tracks(self, tracks, local_of=None, keep: str | None = None) -> None:
+        """The songs as single CDs, the selected one (or ``keep``) still selected."""
+        rack = self.rack
+        if keep is None and 0 <= rack.selected < len(rack.items):
+            keep = rack.items[rack.selected].key
+        rack.set_items(track_items(tracks, local_of), keep)
+
+    def show_track(self, tracks, i: int, numbered: bool = False) -> None:
+        """The detail strip for song ``i`` (hidden when none is selected); ``numbered`` adds "3 of 12"."""
+        from aria.core.models import format_duration
+        if not (0 <= i < len(tracks)):
+            self.detail.hide()
+            return
+        t = tracks[i]
+        bits = [t.artist, format_duration(t.duration) if t.duration else "", t.source_label,
+                STATUS_TEXT[self.rack.items[i].offline], f"{i + 1} of {len(tracks)}" if numbered else ""]
+        self.detail.show_item(self.rack.items[i].cover(), t.title, " · ".join(b for b in bits if b))
+        self.detail.show()
+
     def paintEvent(self, _e):
         if not self.rack.items and any(self.empty[1:]):
             p = QPainter(self)
@@ -736,15 +763,15 @@ def track_items(tracks, local_of=None) -> list[RackItem]:
     """Every song as a single CD: the song name on the spine, the performer at its foot.
     ``local_of(track)`` → its downloaded file ("" when it streams)."""
     import os
-    from aria.core import textnorm
+    from aria.core import identity
     from aria.ui.widgets import thumbs as thumbs_mod
 
     thumbs = thumbs_mod.instance()
     out = []
     for t in tracks:
-        artist = textnorm.artist_of(t.title, t.artist) or textnorm.clean_channel(t.artist)
+        title, artist = identity.display(t)
         local = local_of(t) if local_of else (t.local_path if t.local_path and os.path.exists(t.local_path) else "")
-        out.append(RackItem(key=t.key, title=textnorm.display_title(t.title, t.artist), subtitle=artist,
+        out.append(RackItem(key=t.key, title=title, subtitle=artist,
                             kind="single", tooltip=f"{t.title}\n{t.artist}" if t.artist else t.title,
                             offline="full" if local else "none",
                             cover=(lambda u=t.thumbnail: thumbs.get(u, 180) if u else None)))

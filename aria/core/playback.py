@@ -360,14 +360,6 @@ class Playback(QObject):
             self.queue_changed.emit()
             self.save()
 
-    def reorder(self, keys_in_order: list[int]) -> None:
-        self._end_arrangement()
-        """Apply a permutation coming from a drag-and-drop list."""
-        if sorted(keys_in_order) == list(range(len(self.queue))):
-            self.queue = [self.queue[i] for i in keys_in_order]
-            self.queue_changed.emit()
-            self.save()
-
     def shuffle(self) -> None:
         self._end_arrangement()
         self.end_album()                    # shuffling an album means leaving album order
@@ -996,6 +988,8 @@ class Playback(QObject):
             except OSError:
                 continue                         # still open (e.g. fading out): try again shortly
             del self._pending_delete[key]
+            from aria.core import lyrics
+            lyrics.remove_sidecars(path)
             self.forget_local(key)
             self.file_deleted.emit(key)
             log.info("Deleted the downloaded file of a removed song: %s", os.path.basename(path))
