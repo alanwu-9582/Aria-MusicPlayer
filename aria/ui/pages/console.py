@@ -42,6 +42,8 @@ class ConsolePage(Page):
         self.execute = execute
         self._history: list[str] = []
         self._hpos = 0
+        self._last: tuple | None = None          # the last message shown, to fold repeats
+        self._repeat = 1
 
         clear = Button("Clear", "borderless", icon="trash")
         clear.clicked.connect(self.clear)
@@ -116,21 +118,34 @@ class ConsolePage(Page):
         out.append(self._line(base, message[pos:]))
         return "".join(out)
 
-    def _format(self, r: applog.LogRecord) -> str:
+    def _format(self, r: applog.LogRecord, repeat: int = 1) -> str:
         tag = self._tag(r.name)
         stamp_text, tag_text = applog.stamp(r.time) + "  ", f"{tag:<{TAG_WIDTH}} "
-        message = self._fit(stamp_text + tag_text, r.message)
+        times = f"  ×{repeat}" if repeat > 1 else ""
+        message = self._fit(stamp_text + tag_text + times, r.message)
         base = theme.hex(LEVEL_TOKEN.get(r.level, "secondary"))
         return (self._line(theme.hex("tertiary"), stamp_text)
                 + self._line(theme.hex(TAG_TOKEN.get(tag, "tertiary")), tag_text)
-                + self._colored(message, base))
+                + self._colored(message, base)
+                + (self._line(theme.hex("tertiary"), times) if times else ""))
 
     def _visible(self, r: applog.LogRecord) -> bool:
         return self.level.index() == 0 or r.level >= logging.WARNING
 
     def _append_record(self, r: applog.LogRecord) -> None:
         if self._visible(r):
-            self._append(self._format(r))
+            same = (r.name, r.level, r.message)
+            if same == self._last:
+                # the same message again: count it on the line that's there
+                self._repeat += 1
+                cur = self.view.textCursor()
+                cur.movePosition(QTextCursor.MoveOperation.End)
+                cur.select(QTextCursor.SelectionType.BlockUnderCursor)
+                cur.removeSelectedText()
+                self._append(self._format(r, self._repeat))
+            else:
+                self._last, self._repeat = same, 1
+                self._append(self._format(r))
         self._update_count()
 
     def _update_count(self) -> None:
@@ -140,6 +155,7 @@ class ConsolePage(Page):
 
     def _auto_cleared(self, n: int) -> None:
         self.view.clear()
+        self._last, self._repeat = None, 1
         self._append(self._line(theme.hex("tertiary"), f"— Cleared automatically after {n} messages —"))
 
     def _append(self, html_line: str) -> None:
@@ -152,7 +168,18 @@ class ConsolePage(Page):
 
     def rebuild(self) -> None:
         self.view.clear()
-        lines = [self._format(r) for r in self.bus.history if self._visible(r)]
+        lines: list[str] = []
+        self._last, self._repeat = None, 1
+        for r in self.bus.history:
+            if not self._visible(r):
+                continue
+            same = (r.name, r.level, r.message)
+            if same == self._last:
+                self._repeat += 1
+                lines[-1] = self._format(r, self._repeat)
+            else:
+                self._last, self._repeat = same, 1
+                lines.append(self._format(r))
         if lines:
             self.view.appendHtml("<br>".join(lines))
         self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
@@ -161,6 +188,7 @@ class ConsolePage(Page):
     def clear(self) -> None:
         self.bus.history.clear()
         self.view.clear()
+        self._last, self._repeat = None, 1
         self._update_count()
 
     # ---- commands ------------------------------------------------------------
@@ -170,6 +198,7 @@ class ConsolePage(Page):
         if not cmd:
             return
         self.prompt.clear()
+        self._last = None                         # a command's lines never fold into a log line
         if not self._history or self._history[-1] != cmd:
             self._history.append(cmd)
         self._hpos = len(self._history)

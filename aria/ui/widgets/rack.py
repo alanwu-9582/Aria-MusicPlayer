@@ -67,9 +67,10 @@ class RackView(QWidget):
     """The painted rack. Indices refer to the item list given to ``set_items``."""
 
     activated = Signal(int)                 # double-click / Enter
-    clicked_item = Signal(int)              # single click (after selection)
+    clicked_item = Signal(int)              # single click (on release, when it wasn't a drag)
     selection_changed = Signal(int)         # -1 = none
     context = Signal(int, QPoint)
+    moved = Signal(int, int)                # drag reorder: from, to (``reorderable`` racks only)
 
     def __init__(self, spine_w: int = 34, case_h: int = 168, reveal: float = 0.32, parent=None):
         super().__init__(parent)
@@ -85,6 +86,12 @@ class RackView(QWidget):
         self._spines: dict[tuple, QPixmap] = {}
         self._elided: set[str] = set()        # keys whose spine text didn't fit (only those get a tooltip)
         self._covers: dict[tuple, QPixmap] = {}
+        self.reorderable = False
+        self.drag_tracks = None               # i → [Track]: lets a case be carried out of the rack
+        self._press: QPoint | None = None
+        self._drag = -1                       # case being dragged to a new place
+        self._drop = -1                       # the gap it would land in
+        self._drag_pos = QPoint()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -165,6 +172,14 @@ class RackView(QWidget):
                 return i
         return -1
 
+    def _drop_index(self, pos) -> int:
+        """The gap nearest ``pos``: 0 … len(items)."""
+        cols = self._cols()
+        rows = max(1, math.ceil(len(self.items) / cols))
+        row = max(0, min(rows - 1, int(pos.y()) // self._row_h()))
+        col = max(0, min(cols, round((pos.x() - MARGIN) / self._step())))
+        return min(len(self.items), row * cols + col)
+
     def _dirty(self, i: int) -> QRect:
         """The whole row of case ``i``: the cases after it move too."""
         r = self._rect(i)
@@ -228,7 +243,9 @@ class RackView(QWidget):
         self._update_item(i)
 
     def _pulled_target(self) -> int:
-        """Hover wins; otherwise the keyboard-selected case while the rack has focus."""
+        """Hover wins; otherwise the keyboard-selected case while the rack has focus (none while dragging)."""
+        if self._drag >= 0:
+            return -1
         if self._hover >= 0:
             return self._hover
         return self.selected if self.hasFocus() else -1
@@ -245,7 +262,31 @@ class RackView(QWidget):
     # ---- events --------------------------------------------------------------
 
     def mouseMoveEvent(self, e):
-        i = self._index_at(e.position().toPoint())
+        pos = e.position().toPoint()
+        if self.drag_tracks is not None and self._press is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            src = self._drag if self._drag >= 0 else self._index_at(self._press)
+            leaving = self._drag >= 0 and not self.rect().adjusted(-4, -4, 4, 4).contains(pos)
+            if src >= 0 and (leaving or (not self.reorderable and (pos - self._press).manhattanLength() > 8)):
+                self._drag = self._drop = -1             # no longer a reorder: the case leaves the rack
+                self._press = None
+                self.update()
+                from aria.ui.widgets import dragdrop
+                dragdrop.start(self, self.drag_tracks(src))
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+                return
+        if self.reorderable and self._press is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            if self._drag < 0 and (pos - self._press).manhattanLength() > 8:
+                self._drag = self._index_at(self._press)
+                if self._drag >= 0:               # everything back in while a case is carried
+                    self._hover = -1
+                    self._retarget(self._drag)
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._drag >= 0:
+                self._drag_pos = pos
+                self._drop = self._drop_index(pos)
+                self.update()
+                return
+        i = self._index_at(pos)
         if i != self._hover:
             old = self._pulled_target()
             self._hover = i
@@ -272,16 +313,34 @@ class RackView(QWidget):
     def mousePressEvent(self, e):
         i = self._index_at(e.position().toPoint())
         if e.button() == Qt.MouseButton.LeftButton:
+            self._press = e.position().toPoint()
+            self._drag = -1
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             if i >= 0:
-                self.select(i)
-                self.clicked_item.emit(i)
+                self.select(i)                   # “clicked” is told on release, unless it became a drag
             else:
                 old = self._pulled_target()
                 self.select(-1)                  # a click on empty space clears the selection
                 self._retarget(old)
         elif e.button() == Qt.MouseButton.RightButton and i >= 0:
             self.select(i)
+
+    def mouseReleaseEvent(self, e):
+        if self._drag < 0 and self._press is not None and e.button() == Qt.MouseButton.LeftButton:
+            i = self._index_at(e.position().toPoint())
+            if i >= 0 and i == self._index_at(self._press):
+                self.clicked_item.emit(i)
+        if self._drag >= 0:
+            src, dst = self._drag, self._drop
+            self._drag = self._drop = -1
+            if dst > src:
+                dst -= 1
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            if 0 <= dst != src:
+                self.select(-1, emit=False)
+                self.moved.emit(src, dst)
+            self.update()
+        self._press = None
 
     def mouseDoubleClickEvent(self, e):
         i = self._index_at(e.position().toPoint())
@@ -479,8 +538,8 @@ class RackView(QWidget):
         for row in range(first_row, last_row + 1):
             a = self._rect(row * cols)
             b = self._rect(min(len(self.items), (row + 1) * cols) - 1)
-            plank = QRectF(a.left() - 10, a.bottom(), max(b.right(), a.left() + cols * self._step() - GAP)
-                           - a.left() + 20, PLANK_H)
+            # the plank runs the whole width of the rack, however few cases stand on it
+            plank = QRectF(MARGIN - 10, a.bottom(), max(b.right() - MARGIN, self.width() - 2 * MARGIN) + 20, PLANK_H)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(0, 0, 0, 90 if theme.dark else 40))
             p.drawRoundedRect(plank.translated(0, 3), 2.3, 2.3)
@@ -490,8 +549,36 @@ class RackView(QWidget):
                 t = self._pull.get(i, 0.0)
                 r = self._rect(i)
                 if r.adjusted(-2, -LIFT - 4, 2 + self._reveal_w() * t, 4).intersects(dirty):
+                    if i == self._drag:
+                        p.setOpacity(0.3)             # the empty place it was lifted from
                     self._paint_case(p, i, r, t, dpr)
+                    p.setOpacity(1.0)
+        if self._drag >= 0:
+            self._paint_drag(p, dpr)
         p.end()
+
+    def _paint_drag(self, p: QPainter, dpr: float) -> None:
+        """The carried case under the cursor, and an accent line where it would go."""
+        n = len(self.items)
+        if 0 <= self._drop <= n and n:
+            if self._drop < n:
+                r = self._rect(self._drop)
+                x = r.left() - GAP / 2
+            else:
+                r = self._rect(n - 1)
+                x = r.right() + GAP / 2
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(theme.color("accent"))
+            p.drawRoundedRect(QRectF(x - 1.5, r.top() - 4, 3, r.height() + 8), 1.5, 1.5)
+        sp = self._spine(self.items[self._drag], dpr)
+        target = QRectF(self._drag_pos.x() - self.spine_w / 2, self._drag_pos.y() - self.case_h / 2,
+                        self.spine_w, self.case_h)
+        p.setOpacity(0.85)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 60))
+        p.drawRoundedRect(target.translated(3, 5), 3, 3)
+        p.drawPixmap(target, sp, QRectF(sp.rect()))
+        p.setOpacity(1.0)
 
     def _paint_case(self, p: QPainter, i: int, r: QRectF, t: float, dpr: float) -> None:
         it = self.items[i]
@@ -620,21 +707,16 @@ class RackPanel(QWidget):
     """A scrolling rack plus a slim detail strip for the selected case."""
 
     def __init__(self, rack: RackView, empty: tuple[str, str, str] = ("disc", "", "")):
-        from PySide6.QtWidgets import QFrame, QScrollArea, QVBoxLayout
+        from PySide6.QtWidgets import QVBoxLayout
 
-        from aria.ui.widgets.tracklist import reserve_scrollbar
+        from aria.ui.widgets.tracklist import plain_scroll
         super().__init__()
         self.rack = rack
         self.empty = empty
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        reserve_scrollbar(self.scroll)
+        self.scroll = plain_scroll()
         self.scroll.setWidget(rack)
         self.scroll.verticalScrollBar().setSingleStep(30)
         lay.addWidget(self.scroll, 1)

@@ -255,8 +255,10 @@ class PlayerBar(QFrame):
 
     def set_track(self, t: Track | None) -> None:
         self.cover.set_track(t)
-        self.title.set_full_text(t.title if t else "Aria")
-        self.artist.set_full_text((f"{t.artist} · {t.source_label}" if t.artist else t.source_label) if t else "")
+        from aria.core import identity
+        name, artist = identity.display(t) if t else ("Aria", "")
+        self.title.set_full_text(name)
+        self.artist.set_full_text((f"{artist} · {t.source_label}" if artist else t.source_label) if t else "")
         self.save_btn.setEnabled(t is not None)
         self.playlist_btn.setEnabled(t is not None)
         self._sync_saved()

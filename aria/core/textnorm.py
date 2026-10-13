@@ -63,6 +63,12 @@ def _fold(text: str) -> str:
     return text.casefold().translate(_T2S)
 
 
+def simplified(text: str) -> str:
+    """The same words in simplified characters (case and spacing kept): lyric sites often list
+    Mandarin songs that way only (南拳媽媽 → 南拳妈妈)."""
+    return text.translate(_T2S)
+
+
 def fold(text: str) -> str:
     """Public folding for search: case, width and traditional/simplified script."""
     return _fold(text)
@@ -131,11 +137,6 @@ def _keys(core: str) -> set[str]:
     if not keys and core:
         keys.add(core.replace(" ", ""))
     return keys
-
-
-def song_keys(title: str, artist: str = "") -> set[str]:
-    """Distinctive pieces of the core title: CJK runs and latin phrases."""
-    return _keys(core_title(title, artist))
 
 
 def _cores_match(ca: str, cb: str) -> bool:
@@ -307,7 +308,6 @@ def originality(title: str, channel: str = "") -> float:
 _KANA = re.compile(r"[぀-ヿㇰ-ㇿ]")
 _HANGUL = re.compile(r"[가-힯ᄀ-ᇿ]")
 _HAN = re.compile(r"[㐀-䶿一-鿿]")
-_LATIN = re.compile(r"[A-Za-z]")
 LANGUAGES = {"ja": "Japanese", "zh": "Chinese", "ko": "Korean", "en": "English / Other"}
 
 
@@ -321,3 +321,46 @@ def language_of(title: str, artist: str = "") -> str:
     if _HAN.search(text):
         return "zh"
     return "en"
+
+
+# ---- "Artist - Song" ------------------------------------------------------------------
+
+_SPLIT = re.compile(r"\s+[-–—|｜/]\s+")
+_DECOR = re.compile(r"[\[［(（【][^\]］)）】]*[\]］)）】]")
+_NAME_PIECE = re.compile(r"[㐀-鿿぀-ヿ가-힯]+|[a-z0-9]+")
+
+
+def names_channel(part: str, channel: str) -> float:
+    """How much of ``part`` is the channel's name (0..1): pieces of it — CJK runs, latin
+    words — found in the channel, so "胡夏 Xia Hu" matches the channel "HuXia胡夏"."""
+    c = artist_key(channel)
+    if not c:
+        return 0.0
+    p = artist_key(part)
+    if p and (p in c or c in p):
+        return 1.0
+    pieces = _NAME_PIECE.findall(_fold(part))
+    total = sum(len(x) for x in pieces)
+    if not total:
+        return 0.0
+    hit = sum(len(x) for x in pieces if len(x) >= 2 and x in c)
+    return hit / total
+
+
+def split_song(title: str, channel: str = "") -> tuple[str, str]:
+    """(song name, artist) behind a video title such as "Artist - Song" or "Song / Artist":
+    the evidence decides which side is the artist (see :mod:`aria.core.identity`)."""
+    from aria.core import identity
+    ident = identity.parse(title, channel)
+    if ident.sure("title", 0.5) and (ident.artist or not channel):
+        return ident.title, ident.artist
+    chan = clean_channel(channel)
+    parts = [x.strip() for x in _SPLIT.split(_DECOR.sub(" ", title)) if x.strip()]
+    if len(parts) >= 2 and chan:
+        scores = [names_channel(x, chan) for x in parts[:2]]
+        i = 0 if scores[0] >= scores[1] else 1
+        if scores[i] >= 0.5:
+            other = parts[1 - i]
+            return display_title(other, parts[i]) or other, re.split(r"\s{2,}", parts[i])[0]
+    artist = artist_of(title, channel) or chan
+    return display_title(title, artist), artist

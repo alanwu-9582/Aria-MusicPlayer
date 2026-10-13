@@ -107,6 +107,13 @@ class Library(QObject):
         self._saver.schedule()
         self.track_updated.emit(track.key)
 
+    def move(self, src: int, dst: int) -> None:
+        """Put a saved song somewhere else in the library's order (drag in the rack)."""
+        if 0 <= src < len(self.tracks) and src != dst:
+            t = self.tracks.pop(src)
+            self.tracks.insert(max(0, min(dst, len(self.tracks))), t)
+            self._changed()
+
     def replace(self, old_key: str, new: Track) -> None:
         """Swap a saved song for another version of it, in the same place (Switch Source).
         If that version is already saved, the two become one."""
@@ -176,7 +183,7 @@ def local_track(path: str) -> Track:
 class Downloader(QObject):
     """Sequential download queue."""
 
-    progress = Signal(str, float)        # label, 0..1
+    progress = Signal(str, float)        # "2/5 · title", 0..1 of the whole batch
     finished = Signal(str, str)          # key, path
     idle = Signal(int, int)              # ok, failed
 
@@ -210,9 +217,12 @@ class Downloader(QObject):
         self._busy = True
         track = self._pending.pop(0)
         index = self._total - len(self._pending)
-        label = f"{index}/{self._total}"
-        self.progress.emit(label, 0.0)
-        report = lambda f: self.progress.emit(label, f)  # noqa: E731  (called from the worker; signal is queued)
+        total = self._total
+        title = track.title if len(track.title) <= 28 else track.title[:27] + "…"
+        label = f"{index}/{total} · {title}" if total > 1 else title
+        # the bar covers the whole batch: finished songs plus the share of this one
+        report = lambda f: self.progress.emit(label, (index - 1 + max(0.0, min(1.0, f))) / total)  # noqa: E731
+        report(0.0)
 
         def done(path: str):
             self._ok += 1

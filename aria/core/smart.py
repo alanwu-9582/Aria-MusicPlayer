@@ -96,7 +96,13 @@ def _matches(rule: dict, t: Track, saved_at: float | None, stat, now: float) -> 
         has = t.source == LOCAL or bool(t.local_path and os.path.exists(t.local_path))
         return has == bool(v)
     if f == "language":
-        return textnorm.language_of(t.title, t.artist) == v
+        from aria.core import identity
+        lang = identity.of(t).language
+        if not lang:
+            # the old script rule only where it can't mislead: kanji alone isn't Chinese
+            old = textnorm.language_of(t.title, t.artist)
+            lang = old if old != "zh" else ""
+        return lang == v
     if f == "source":
         return t.source == v
     if f == "artist":

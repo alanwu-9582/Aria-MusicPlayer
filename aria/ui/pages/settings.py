@@ -7,16 +7,16 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFontMetrics, QPainter
-from PySide6.QtWidgets import (QAbstractButton, QFrame, QGridLayout, QHBoxLayout, QLineEdit, QScrollArea,
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QGridLayout, QHBoxLayout, QLineEdit,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from aria import paths
 from aria.core.balance import DEFAULT_EXCLUDED
 from aria.ui.pages.base import Page
 from aria.ui.theme import font, theme
-from aria.ui.widgets.controls import Button, CheckBox, IconButton, MenuButton, Toggle, hbox, label
+from aria.ui.widgets.controls import Button, IconButton, MenuButton, Toggle, hbox, label
 from aria.ui.widgets.segmented import Segmented
-from aria.ui.widgets.tracklist import reserve_scrollbar
+from aria.ui.widgets.tracklist import plain_scroll
 
 CONSOLE_CLEAR = [200, 500, 1000, 0]      # messages; 0 = never
 
@@ -124,12 +124,7 @@ class SettingsPage(Page):
         outline_box.setFixedWidth(150)
         outline_box.setLayout(self.outline)
         row.addWidget(outline_box, 0, Qt.AlignmentFlag.AlignTop)
-        self.scroll = scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        reserve_scrollbar(scroll)
+        self.scroll = scroll = plain_scroll()
         body = QWidget()
         col = self.col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 12, 0)
@@ -236,7 +231,25 @@ class SettingsPage(Page):
         lyr = self._group("Lyrics")
         self.lyrics_enh = self._toggle("Deep Lyrics Search", "lyrics_enhanced",
                                        "Also look in video descriptions and comments")
-        lyr.pair(self.lyrics_enh)
+        self.lyrics_align = self._toggle("Forced Alignment", "lyrics_align",
+                                         "Downloaded songs with only plain lyrics: a speech model listens and times "
+                                         "each line (shown as Synced · Aligned; plain lyrics stay when it can't tell)")
+        lyr.pair(self.lyrics_enh, self.lyrics_align)
+        self.align_streams = self._toggle("Align Streamed Songs", "align_streams",
+                                          "Streamed songs without synced lyrics: download a temporary copy to align "
+                                          "while it plays; the copy is deleted when the song ends")
+        self.lyrics_align.toggled.connect(lambda _on: self._sync_align())
+        lyr.pair(self.align_streams)
+        self.lyrics_trans = self._toggle("Lyrics Translation", "lyrics_translation",
+                                         "Show a line's translation under it, when the lyrics have one")
+        self.lyrics_words = self._toggle("Word-by-Word Lyrics", "lyrics_words",
+                                         "Fill the sung line word by word, when the lyrics are timed per word")
+        lyr.pair(self.lyrics_trans, self.lyrics_words)
+        from aria.ui.widgets.dialogs import confirm
+        from aria.ui.widgets.models_panel import ModelsPanel
+        self.models = ModelsPanel(settings, window.models, confirm, window.toast, self._sync_align)
+        lyr.field("Speech Models", self.models)
+        self._sync_align()
 
         # ---- appearance
         look = self._group("Appearance")
@@ -332,6 +345,16 @@ class SettingsPage(Page):
         t.setChecked(bool(self.settings[key]))
         t.toggled.connect(lambda on: self._set(key, on))
         return t
+
+    def _sync_align(self) -> None:
+        """Forced Alignment can be turned on once there's an engine and a model to run."""
+        from aria.core import aligner
+        ready = aligner.engine_available() and aligner.installed(self.settings["align_model"])
+        self.lyrics_align.setEnabled(ready)
+        if not ready and self.lyrics_align.isChecked():
+            self.lyrics_align.setChecked(False)
+        if hasattr(self, "align_streams"):
+            self.align_streams.setEnabled(ready and self.lyrics_align.isChecked())
 
     def _set(self, key: str, value) -> None:
         self.settings[key] = value
@@ -453,8 +476,7 @@ class AppList(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         for i, name in enumerate(names):
-            box = CheckBox(name.removesuffix(".exe"))
-            box.setToolTip(name)
+            box = Toggle(name.removesuffix(".exe"), name)
             box.setChecked(name in {c.lower() for c in chosen})
             box.toggled.connect(lambda on, n=name: self._toggle(n, on))
             self.rows.addWidget(box, i // 2, i % 2)

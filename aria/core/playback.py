@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from aria import paths, providers
 from aria.core import tasks, timefit
-from aria.core.models import LOCAL, Stream, Track, format_duration
+from aria.core.models import LOCAL, Stream, Track
 from aria.core.player import IDLE, LOADING, PAUSED, PLAYING, Player
 from aria.core.recommend import Recommender, assemble, pick_related
 from aria.core.storage import DebouncedSaver, read_json
@@ -88,6 +88,7 @@ class Playback(QObject):
         self._rank = tasks.Latest()
         self.tempo = None                         # set by the app: BPM cache / analyser (Tempo Flow)
         self._recs_base: list[Track] = []         # recommendations in relevance order (before Tempo Flow)
+        self.auto_reason = ""                     # why the song is changing on its own right now (the Console says so)
         self._flow_order: list[str] = []          # a playlist being played with Tempo Flow: its own order (keys)
         self._tempo_timer = QTimer(self)          # BPMs arrive one by one: reorder once they settle
         self._tempo_timer.setSingleShot(True)
@@ -287,12 +288,7 @@ class Playback(QObject):
             self.queue_changed.emit()
             self.play_now(track)
 
-    def play_history_item(self, index: int) -> None:
-        if 0 <= index < len(self.history):
-            self.play_now(self.history[index].copy())
-
     def seek(self, seconds: float) -> None:
-        log.info("Seek %s", format_duration(seconds))
         self.player.seek(seconds)
 
     def seek_by(self, delta: float) -> None:
@@ -331,6 +327,7 @@ class Playback(QObject):
         was_empty = not self.queue
         tracks = [t.copy() for t in tracks]
         if play_next:
+            self._drop_from_queue(tracks)            # already waiting: moved up, not queued twice
             self.queue[0:0] = tracks
         else:
             self.queue.extend(tracks)
@@ -341,6 +338,11 @@ class Playback(QObject):
             self.next()
         else:
             self._prefetch()
+
+    def _drop_from_queue(self, tracks: list[Track]) -> None:
+        keys = {t.key for t in tracks}
+        if any(t.key in keys for t in self.queue):
+            self.queue = [t for t in self.queue if t.key not in keys]
 
     def remove(self, indices: list[int]) -> None:
         self._end_arrangement()                   # the user is arranging the queue themselves
@@ -394,6 +396,7 @@ class Playback(QObject):
         if self.current:
             self._push_history(self.current)
         self.album = {"title": title, "keys": [t.key for t in tracks]}
+        self._drop_from_queue(tracks)                # pressing Play again never doubles the album
         self.queue[0:0] = tracks[1:]
         self.queue_changed.emit()
         self.apply_settings()
@@ -772,7 +775,7 @@ class Playback(QObject):
             return
         self._autoplay_fill()
         if self.player.state == IDLE:
-            self._advance()
+            self._auto("autoplay", self._advance)
 
     def accept_recommendation(self, index: int, play: bool = False) -> None:
         if 0 <= index < len(self.recommendations):
@@ -866,7 +869,7 @@ class Playback(QObject):
             self.stop()
             return
         self.notice.emit("warning", "Couldn’t play — skipped")
-        self.next()
+        self._auto("skipped", self.next)
 
     def _prefetch(self) -> None:
         """Resolve the next streams ahead of time so the change-over is instant."""
@@ -982,9 +985,6 @@ class Playback(QObject):
         self._pending_delete[key] = path
         self._delete_timer.start()
 
-    def deleting_later(self, key: str) -> bool:
-        return key in self._pending_delete
-
     def _try_deletes(self) -> None:
         for key, path in list(self._pending_delete.items()):
             if self.current and self.current.key == key:
@@ -1065,13 +1065,21 @@ class Playback(QObject):
             self._start(self.current)       # cached stream → restarts instantly
             return
         if self._is_timer_end(self.current):
-            self.cancel_timer()
+            self._auto("ended", self.cancel_timer)
             self._push_history(self.current)
             self._set_current(None)
             self.stop()
             self.notice.emit("info", "Time’s up")
             return
-        self.next()
+        self._auto("ended", self.next)
+
+    def _auto(self, reason: str, fn) -> None:
+        """Run ``fn`` as a change Aria makes by itself (not the listener's)."""
+        self.auto_reason = reason
+        try:
+            fn()
+        finally:
+            self.auto_reason = ""
 
     def _on_failed(self) -> None:
         track = self.current

@@ -123,5 +123,17 @@ def download(track: Track, progress=None) -> str:
     return BY_SOURCE[track.source].download(track, progress)
 
 
+def download_to(track: Track, folder, progress=None) -> str:
+    """A copy in ``folder`` instead of the audio folder (never linked to the library)."""
+    from pathlib import Path
+    from aria.providers import base
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    token = base.FOLDER.set(Path(folder))
+    try:
+        return download(track, progress)
+    finally:
+        base.FOLDER.reset(token)
+
+
 __all__ = ["youtube", "bilibili", "spotify", "soundcloud", "web", "PROVIDERS", "SEARCHABLE",
            "is_link", "parse", "search", "stream", "download", "detect", "SPOTIFY"]

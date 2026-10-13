@@ -8,7 +8,7 @@ import os
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QKeyEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QAbstractSlider, QAbstractSpinBox, QApplication, QComboBox, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QHBoxLayout,
                                QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QStackedWidget, QSystemTrayIcon,
                                QTextEdit, QVBoxLayout, QWidget)
 
@@ -83,9 +83,16 @@ class MainWindow(QMainWindow):
 
         self.toast_widget = Toast(central)
         self.actions = TrackActions(playback, library, downloader, playlists, self.toast)
+        from aria.core.aligner import ModelManager
+        self.models = ModelManager()                 # speech model downloads (Forced Alignment)
         from aria.core.switch import SourceSwitcher
         self.switcher = SourceSwitcher(library, playlists, playback)
         self.actions.switcher = self.switcher
+        self.actions.edit_info = self.edit_song_info
+        from aria.ui.widgets.lyrics_view import LyricsView
+        LyricsView.set_extras(settings["lyrics_translation"], settings["lyrics_words"])
+        self._learn_artists()
+        library.changed.connect(self._learn_artists)
         from aria.core.activity import Activity
         self.activity = Activity(playback, library, downloader, playlists, devices, balance)
         log_bus.limit = settings["console_clear_after"]
@@ -166,10 +173,6 @@ class MainWindow(QMainWindow):
         return self.page(SHELF)
 
     @property
-    def console_page(self):
-        return self.page(CONSOLE)
-
-    @property
     def settings_page(self):
         return self.page(SETTINGS)
 
@@ -183,6 +186,8 @@ class MainWindow(QMainWindow):
         self.sidebar.new_playlist.connect(self._add_menu)
         self.sidebar.collapse_toggled.connect(lambda c: self.settings.__setitem__("sidebar_collapsed", c))
         self.sidebar.appearance_clicked.connect(self._cycle_appearance)
+        self.sidebar.quit_clicked.connect(self.quit_app)
+        self.sidebar.tracks_to_queue.connect(self.actions.enqueue)
         self.playlists.changed.connect(self._sync_playlists)
         pb.notice.connect(lambda kind, text: self.toast(kind, text))
         pb.state_changed.connect(lambda _s: self._update_status())
@@ -248,12 +253,10 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Q", self.quit_app, True)
 
     def _arrow(self, key, step: int) -> None:
-        """←/→ seek, except in the controls that move with them (text, sliders, the rack…)."""
-        from aria.ui.widgets.segmented import Segmented
-        from aria.ui.widgets.slider import Slider
+        """←/→ always seek — except while typing in text that has a caret to move."""
         fw = QApplication.focusWidget()
-        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QAbstractSlider, QComboBox,
-                           Slider, Segmented, rack_mod.RackView)):
+        typing = (isinstance(fw, QLineEdit) and fw.text()) or isinstance(fw, (QTextEdit, QPlainTextEdit, QAbstractSpinBox))
+        if typing:
             for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
                 QApplication.sendEvent(fw, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier))
             return
@@ -381,9 +384,9 @@ class MainWindow(QMainWindow):
 
     def toast(self, kind: str, text: str) -> None:
         self.toast_widget.show_message(text, kind)
-        # every message shown to the user also goes to the Console
-        logging.getLogger("notice").log(
-            {"danger": logging.ERROR, "warning": logging.WARNING}.get(kind, logging.INFO), "%s", text)
+        # problems also go to the Console (confirmations of the listener's own actions don't)
+        if kind in ("danger", "warning"):
+            logging.getLogger("notice").log(logging.ERROR if kind == "danger" else logging.WARNING, "%s", text)
 
     def set_appearance(self, appearance: str) -> None:
         self.settings["appearance"] = appearance
@@ -396,10 +399,36 @@ class MainWindow(QMainWindow):
         cur = self.settings["appearance"]
         self.set_appearance(APPEARANCES[(APPEARANCES.index(cur) + 1) % len(APPEARANCES)])
 
+    def _learn_artists(self) -> None:
+        """Artists in the library are evidence when reading a video title (which side is the singer)."""
+        from aria.core import identity
+        names = []
+        for t in self.library.tracks:
+            if t.source == "spotify":
+                names += [x.strip() for x in t.artist.split(",")]
+            elif t.artist and not identity.generic_channel(identity.clean_uploader(t.artist)):
+                names.append(identity.clean_uploader(t.artist))
+        identity.remember_artists(names)
+
+    def edit_song_info(self, track) -> None:
+        """Edit Song Info…: the corrected name shows everywhere, and lyrics are looked up again."""
+        from aria.ui.widgets.song_info import edit_song_info
+        if not edit_song_info(self, track):
+            return
+        cur = self.playback.current
+        if cur is not None and cur.key == track.key:
+            self.now_page._on_current(cur)
+            self.now_page._load_lyrics(force=True)
+            self.player_bar.set_track(cur)
+            if self.immersive is not None:
+                self.immersive._arrange()
+        self.toast("success", "Song info saved")
+
     def settings_changed(self, key: str) -> None:
         value = self.settings[key]
-        if not isinstance(value, (dict, list)):
-            logging.getLogger("settings").info("%s → %s", key, value)
+        if key in ("lyrics_translation", "lyrics_words"):
+            from aria.ui.widgets.lyrics_view import LyricsView
+            LyricsView.set_extras(self.settings["lyrics_translation"], self.settings["lyrics_words"])
         if key == "console_clear_after":
             self.log_bus.limit = value
         if key in ("crossfade", "crossfade_secs"):
@@ -558,9 +587,9 @@ class MainWindow(QMainWindow):
         tasks.run(cache.clear, done, lambda e: self.toast("danger", "Couldn’t clear the cache"))
 
     def free_space(self) -> None:
-        """Delete downloaded songs; they stay saved and in playlists, and stream when played."""
+        """Pick downloaded songs to delete; they stay saved and in playlists, and stream when played."""
         from aria.core import cache
-        from aria.ui.widgets.dialogs import confirm
+        from aria.ui.widgets.free_space_dialog import FreeSpaceDialog
         if self.downloader.busy:
             self.toast("info", "Wait for the downloads to finish first")
             return
@@ -568,22 +597,20 @@ class MainWindow(QMainWindow):
         for t in self.library.tracks + [t for p in self.playlists.items for t in p.tracks]:
             if t.key not in seen and self.actions.local_path_of(t):
                 seen[t.key] = t
-        files = list(seen.values())
-        if not files:
+        if not seen:
             self.toast("info", "No downloaded songs to delete")
             return
+        dlg = FreeSpaceDialog(self, [(t, self.actions.local_path_of(t)) for t in seen.values()])
+        if not dlg.exec() or not dlg.selected():
+            return
+        chosen = dlg.selected()
         size = 0
-        for t in files:
+        for t in chosen:
             try:
                 size += os.path.getsize(self.actions.local_path_of(t))
             except OSError:
                 pass
-        n = len(files)
-        if not confirm(self, f"Free up {cache.human(size)}?",
-                       f"Deletes {n} downloaded song{'s' if n != 1 else ''}. They stay in your Library "
-                       "and playlists, and stream when played.", "Delete Downloads", danger=True):
-            return
-        deleted, kept, later = self.actions.delete_downloads(files)
+        deleted, kept, later = self.actions.delete_downloads(chosen)
         parts = [f"{cache.human(size)} freed" if deleted else "Nothing deleted"]
         if later:
             parts.append("the playing song goes when it ends")
@@ -620,7 +647,7 @@ class MainWindow(QMainWindow):
             return
         if self.immersive is None:
             from aria.ui.immersive import ImmersiveView
-            self.immersive = ImmersiveView(self.playback, self.settings, self.now_page.lyrics)
+            self.immersive = ImmersiveView(self.playback, self.settings, self.now_page.lyrics, self.actions)
             self.immersive.closed.connect(self._immersive_closed)
         self.now_page._load_lyrics()               # make sure lyrics are on their way
         self.immersive.enter(self.screen())
@@ -704,7 +731,7 @@ class MainWindow(QMainWindow):
             Command("Open Downloads Folder", "folder",
                     lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))), "", "files"),
             Command("Change Appearance", "moon", self._cycle_appearance, "", "theme dark light"),
-            Command("Quit Aria", "close", self.quit_app, "Ctrl+Q", "exit"),
+            Command("Quit Aria", "power", self.quit_app, "Ctrl+Q", "exit close"),
         ]
         return cmds
 

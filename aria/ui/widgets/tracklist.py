@@ -7,7 +7,7 @@ from typing import Callable
 
 from PySide6.QtCore import QAbstractListModel, QEvent, QModelIndex, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics, QPainter, QPainterPath
-from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate, QToolTip
+from PySide6.QtWidgets import QAbstractItemView, QFrame, QListView, QScrollArea, QStyle, QStyledItemDelegate, QToolTip
 
 from aria.core.models import Track, format_duration
 from aria.ui import icons
@@ -222,6 +222,7 @@ class TrackListView(QListView):
         self.hover_action: tuple[int, RowAction] | None = None
         self.empty = (empty_icon, empty_title, empty_text)
         self.reorderable = reorderable
+        self.drag_out = False                 # songs can be dragged out onto drop targets
         self.numbered = False
         self._press: QPoint | None = None
         self._drag_row = -1
@@ -297,6 +298,15 @@ class TrackListView(QListView):
             self.hover_row = row
             self.hover_action = hit
             self.viewport().update()
+        if self.drag_out and not self.reorderable and self._press is not None \
+                and e.buttons() & Qt.MouseButton.LeftButton and (pos - self._press).manhattanLength() > 8:
+            row = self.indexAt(self._press).row()
+            if row >= 0:
+                rows = self.selected_rows() if row in self.selected_rows() else [row]
+                self._press = None
+                from aria.ui.widgets import dragdrop
+                dragdrop.start(self, [self.model_.tracks[r] for r in rows])
+                return
         if self.reorderable and self._press is not None and e.buttons() & Qt.MouseButton.LeftButton:
             if self._drag_row < 0 and (pos - self._press).manhattanLength() > 6:
                 self._drag_row = self.indexAt(self._press).row()
@@ -391,6 +401,18 @@ def paint_empty(p: QPainter, rect: QRect, icon: str, title: str, text: str) -> N
         p.setFont(font("body"))
         p.setPen(theme.color("secondary"))
         p.drawText(QRect(rect.left() + 16, top + 74, rect.width() - 32, 20), Qt.AlignmentFlag.AlignCenter, text)
+
+
+def plain_scroll(reserve: bool = True) -> QScrollArea:
+    """The app's scroll area: frameless, see-through, vertical only (scrollbar space kept unless ``reserve`` is off)."""
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+    if reserve:
+        reserve_scrollbar(area)
+    return area
 
 
 def reserve_scrollbar(view) -> None:

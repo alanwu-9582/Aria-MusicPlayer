@@ -75,6 +75,11 @@ class Settings:
         "smart_artwork": True,      # tint the now-playing page from the cover
         "close_to_tray": True,
         "lyrics_enhanced": False,   # also look for lyrics in descriptions / comments
+        "lyrics_translation": True, # show translation rows under lyric lines (when the lyrics have them)
+        "lyrics_words": True,       # word-by-word highlight (when the lyrics are timed per word)
+        "lyrics_align": False,      # Forced Alignment: time plain lyrics of downloaded songs with a speech model
+        "align_model": "",          # which downloaded model (data/models/<id>)
+        "align_streams": False,     # streamed songs with plain lyrics: download a temporary copy to align
         "mini_pos": "",
         "discovery": 0.5,           # recommendations: 0 familiar … 1 unexpected
         "volume_mode": "volume",    # the player bar slider: volume | balance
@@ -96,7 +101,7 @@ class Settings:
         "tempo_flow": False,        # recommended songs follow one another by beat
         "tempo_strength": "balanced",   # gentle | balanced | strong
         "tempo_scope": "recommendations",   # recommendations | playlists (also orders a playlist being played)
-        "immersive_layout": "centered",     # Immersive Mode: centered | editorial
+        "immersive_layout": "editorial",    # Immersive Mode: editorial (lyrics + cover) | collage (up-next squares)
         "immersive_lyrics": True,
         "resume_on_start": False,
         "console_clear_after": 1000,    # Console: clear itself after this many messages (0 = never)   # start again with the song (and the moment) Aria was closed on

@@ -106,7 +106,6 @@ class SearchPage(Page):
         self.status.setText("Reading link…" if is_link else "Searching…")
         self.add_all.hide()
         self.save_all.hide()
-        log.info("%s: %s", "Link" if is_link else f"Search {SOURCE_NAMES[self.source.index()]}", query)
 
         def work():
             return providers.parse(query) if is_link else providers.search(source, query, 25)
@@ -118,7 +117,6 @@ class SearchPage(Page):
             self.results.scrollToTop()
             if tracks and TrackListView.warm_hook:
                 TrackListView.warm_hook(tracks[0])      # the likeliest pick
-            log.info("Found %d", len(tracks))
             self._update_bar()
 
         def failed(exc):

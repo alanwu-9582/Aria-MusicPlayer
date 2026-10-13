@@ -9,7 +9,7 @@ import os
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices
-from PySide6.QtWidgets import QFileDialog, QLineEdit, QStackedWidget
+from PySide6.QtWidgets import QFileDialog, QLineEdit, QMenu, QStackedWidget, QWidget
 
 from aria import paths
 from aria.core.library import AUDIO_EXTS, local_track
@@ -18,7 +18,7 @@ from aria.ui import icons
 from aria.ui.pages.base import Page
 from aria.ui.theme import theme
 from aria.ui.widgets import thumbs as thumbs_mod
-from aria.ui.widgets.controls import Button, IconButton, label, vline
+from aria.ui.widgets.controls import Button, IconButton, add_item, hbox, label, menu_below
 from aria.ui.widgets.rack import RackPanel, RackView, track_items
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import RowAction, TrackListView
@@ -35,17 +35,6 @@ class LibraryPage(Page):
         self.actions = actions
         self.toast = toast
 
-        self.open_btn = Button("Add Files…", "borderless", icon="plus")
-        self.folder_btn = Button("Downloads", "borderless", icon="folder")
-        self.folder_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))))
-        self.import_btn = Button("Import…", "borderless", icon="import")
-        self.export_btn = Button("Export…", "borderless", icon="export")
-        for b in (self.folder_btn, self.open_btn, self.import_btn, self.export_btn):
-            self.header.addWidget(b)
-        self.open_btn.clicked.connect(self.add_files)
-        self.import_btn.clicked.connect(self.import_playlist)
-        self.export_btn.clicked.connect(self.export_playlist)
-
         bar = self.toolbar()
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("Filter")
@@ -55,16 +44,16 @@ class LibraryPage(Page):
         self.filter.addAction(self._filter_icon, QLineEdit.ActionPosition.LeadingPosition)
         self.filter.textChanged.connect(self._refresh)
         self.play_btn = Button("Play", "primary", icon="play")
-        self.queue_btn = Button("Add to Queue", icon="queue-add")
-        self.download_btn = Button("Download", icon="download")
-        self.remove_btn = Button("Remove", "danger", icon="trash")
+        self.more_btn = IconButton("more", "More", tone="secondary")
+        self.more_btn.clicked.connect(self._more)
         self.count = label("", "Caption")
         self.view_toggle = Segmented(["List", "Disc Rack"], compact=True)
-        for w in (self.filter, vline(), self.play_btn, self.queue_btn, self.download_btn, vline(), self.remove_btn):
+        for w in (self.filter, self.play_btn):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.count)
         bar.addWidget(self.view_toggle)
+        bar.addWidget(self.more_btn)
 
         self.list = TrackListView("library", "Your library is empty", "Save songs with the heart in Search.")
         self.list.actions = [
@@ -72,7 +61,8 @@ class LibraryPage(Page):
             RowAction("download", "Download", lambda r: actions.download([self.list.tracks()[r]]),
                       lambda t: bool(t.local_path)),
         ]
-        self.list.activated_row.connect(lambda r: actions.play(self.list.tracks()[r:]))
+        self.list.activated_row.connect(lambda r: actions.play(self.list.tracks()[r:r + 1]))
+        self.list.drag_out = True
         self.list.delete_pressed.connect(lambda _rows: self.remove())
         self.list.context_requested.connect(self._menu)
         self.list.selectionModel().selectionChanged.connect(lambda *_: self._update_buttons())
@@ -80,9 +70,12 @@ class LibraryPage(Page):
         # Disc Rack: the same songs as single CDs on shelves.
         self.rack = RackView()
         self.rack_panel = RackPanel(self.rack, ("library", "Your library is empty", "Save songs with the heart in Search."))
-        self.rack.activated.connect(lambda i: actions.play(self.list.tracks()[i:]))
+        self.rack.activated.connect(lambda i: actions.play(self.list.tracks()[i:i + 1]))
+        self.rack.drag_tracks = lambda i: [self.list.tracks()[i]] if 0 <= i < len(self.list.tracks()) else []
         self.rack.context.connect(lambda i, pos: self._menu([i], pos))
         self.rack.selection_changed.connect(self._rack_selected)
+        self.rack.reorderable = True
+        self.rack.moved.connect(self._rack_moved)
         strip = self.rack_panel.detail
         for icon, tip, fn in (("play", "Play", lambda: actions.play(self._targets())),
                               ("queue-add", "Add to Queue", lambda: actions.enqueue(self._targets())),
@@ -99,10 +92,21 @@ class LibraryPage(Page):
         self.root.addWidget(self.stack, 1)
         self.view_toggle.changed.connect(self._set_view)
 
+        # appears only while songs from here are being dragged
+        from aria.ui.widgets import dragdrop
+        self.to_queue = dragdrop.DropZone("queue-add", "Add to Queue")
+        self.to_queue.dropped.connect(actions.enqueue)
+        self.to_trash = dragdrop.DropZone("trash", "Remove from Library", danger=True)
+        self.to_trash.dropped.connect(self._remove_tracks)
+        self.drop_bar = QWidget()
+        self.drop_bar.setLayout(hbox(self.to_queue, self.to_trash, spacing=12))
+        self.drop_bar.layout().setContentsMargins(0, 0, 0, 0)
+        self.drop_bar.hide()
+        self.root.addWidget(self.drop_bar)
+        dragdrop.bus.started.connect(lambda src: self.drop_bar.setVisible(src in (self.list, self.rack)))
+        dragdrop.bus.finished.connect(self.drop_bar.hide)
+
         self.play_btn.clicked.connect(lambda: actions.play(self._targets()))
-        self.queue_btn.clicked.connect(lambda: actions.enqueue(self._targets()))
-        self.download_btn.clicked.connect(lambda: actions.download(self._targets()))
-        self.remove_btn.clicked.connect(self.remove)
 
         library.changed.connect(self._refresh)
         library.track_updated.connect(self.list.model_.refresh_key)
@@ -143,6 +147,11 @@ class LibraryPage(Page):
         self.stack.setCurrentIndex(i)
         self._update_buttons()
 
+    def _rack_moved(self, src: int, dst: int) -> None:
+        # only the whole, unfiltered library can be put in a new order
+        if not self.filter.text().strip():
+            self.library.move(src, dst)
+
     def _sync_rack(self, keep: str | None = None) -> None:
         if keep is None and 0 <= self.rack.selected < len(self.rack.items):
             keep = self.rack.items[self.rack.selected].key
@@ -177,6 +186,7 @@ class LibraryPage(Page):
             if t.key in selected:
                 self.list.selectionModel().select(self.list.model_.index(i),
                                                   self.list.selectionModel().SelectionFlag.Select)
+        self.rack.reorderable = not q
         if self.rack_mode:
             self._sync_rack()
         else:
@@ -198,16 +208,38 @@ class LibraryPage(Page):
         has_any = bool(self.list.tracks())
         sel = self._selection()
         self.play_btn.setEnabled(has_any)
-        self.queue_btn.setEnabled(has_any)
-        self.download_btn.setEnabled(any(t.source != LOCAL and not t.local_path for t in (sel or self.list.tracks())))
-        self.remove_btn.setEnabled(bool(sel))
-        self.export_btn.setEnabled(bool(self.library.tracks))
+        self.play_btn.setText("Play Selected" if len(sel) > 1 else "Play")
+
+    def _more(self) -> None:
+        """The less-used actions: on the selection (or everything shown), then the library itself."""
+        m = QMenu(self)
+        sel, targets = self._selection(), self._targets()
+        a = self.actions
+        add_item(m, "queue-add", "Add to Queue", lambda: a.enqueue(targets), bool(targets))
+        add_item(m, "download", "Download", lambda: a.download(targets),
+                 any(t.source != LOCAL and not t.local_path for t in targets))
+        add_item(m, "trash", "Remove from Library", self.remove, bool(sel))
+        m.addSeparator()
+        add_item(m, "plus", "Add Music Files…", self.add_files)
+        add_item(m, "import", "Import Playlist…", self.import_playlist)
+        add_item(m, "export", "Export Playlist…", self.export_playlist, bool(self.library.tracks))
+        add_item(m, "folder", "Open Downloads Folder",
+                 lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.AUDIO_DIR))))
+        menu_below(self.more_btn, m)
 
     def _menu(self, rows, pos) -> None:
         tracks = [self.list.tracks()[r] for r in rows]
         self.actions.menu(self, tracks, [("trash", "Remove from Library", self.remove)]).exec(pos)
 
     # ---- commands ------------------------------------------------------------
+
+    def _remove_tracks(self, tracks) -> None:
+        """Dropped on Remove: gone at once (asked only about deleting downloaded files)."""
+        keys = [t.key for t in tracks]
+        name = f"“{tracks[0].title}”" if len(tracks) == 1 else f"{len(tracks)} songs"
+        self.actions.remove_with_files(self, tracks, f"Remove {name} from Library?",
+                                       "Your queue and history stay as they are.",
+                                       lambda: self.library.remove(keys, delete_files=False), confirm_always=False)
 
     def remove(self) -> None:
         tracks = self._selection()

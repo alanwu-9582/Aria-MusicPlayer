@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics, QPainter
-from PySide6.QtWidgets import QAbstractButton, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractButton, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from aria.ui import icons
 from aria.ui.theme import font, theme
 from aria.ui.widgets.controls import IconButton, label
+from aria.ui.widgets.tracklist import plain_scroll
 
 EXPANDED, COLLAPSED = 212, 60
 APPEARANCE_ICON = {"system": "monitor", "light": "sun", "dark": "moon"}
@@ -17,6 +18,7 @@ APPEARANCE_TIP = {"system": "Appearance: System", "light": "Appearance: Light", 
 
 
 class SidebarItem(QAbstractButton):
+    tracks_dropped = Signal(list)
     """A navigation entry. ``primary`` (Now Playing) stands a little taller and keeps a faint
     accent background even when not selected — a quiet main entrance, not a call to action."""
 
@@ -36,6 +38,26 @@ class SidebarItem(QAbstractButton):
         self._kbd_focus = False
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         theme.changed.connect(self.update)
+
+    def dragEnterEvent(self, e):
+        from aria.ui.widgets import dragdrop
+        if dragdrop.carried(e.mimeData()):
+            self._hover = True
+            self.update()
+            e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def dropEvent(self, e):
+        from aria.ui.widgets import dragdrop
+        tracks = dragdrop.carried(e.mimeData())
+        self._hover = False
+        self.update()
+        if tracks:
+            e.acceptProposedAction()
+            self.tracks_dropped.emit(tracks)
 
     def focusInEvent(self, e):
         self._kbd_focus = e.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
@@ -106,6 +128,8 @@ class Sidebar(QFrame):
     new_playlist = Signal()
     collapse_toggled = Signal(bool)
     appearance_clicked = Signal()
+    quit_clicked = Signal()
+    tracks_to_queue = Signal(list)              # songs dropped on Now Playing
 
     def __init__(self, groups: list[tuple[str, list[tuple[str, str]]]], parent: QWidget | None = None):
         super().__init__(parent)
@@ -128,11 +152,7 @@ class Sidebar(QFrame):
         outer.addSpacing(14)
 
         # scrolling item list
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.scroll = plain_scroll(reserve=False)
         body = QWidget()
         self.body = QVBoxLayout(body)
         self.body.setContentsMargins(8, 0, 8, 0)
@@ -180,9 +200,16 @@ class Sidebar(QFrame):
         self.collapse_btn.clicked.connect(lambda: self.set_collapsed(not self.collapsed, emit=True))
         self.appearance_btn = IconButton("monitor", APPEARANCE_TIP["system"], tone="secondary")
         self.appearance_btn.clicked.connect(self.appearance_clicked)
+        # quits for real, even when closing the window would keep the music going in the tray
+        self.quit_btn = IconButton("power", "Quit Aria (Ctrl+Q)", tone="secondary")
+        self.quit_btn.clicked.connect(self.quit_clicked)
+        now = self.items[0]                       # Now Playing: drop songs here to queue them
+        now.setAcceptDrops(True)
+        now.tracks_dropped.connect(self.tracks_to_queue)
         bottom.addWidget(self.collapse_btn)
         bottom.addStretch(1)
         bottom.addWidget(self.appearance_btn)
+        bottom.addWidget(self.quit_btn)
         self._bottom = bottom
         outer.addLayout(bottom)
         self.setFixedWidth(EXPANDED)
@@ -254,7 +281,7 @@ class Sidebar(QFrame):
         self._brand_row.setContentsMargins(0 if collapsed else 18, 0, 0 if collapsed else 8, 0)
         self._brand_row.setAlignment(self.logo, Qt.AlignmentFlag.AlignHCenter if collapsed else Qt.AlignmentFlag.AlignLeft)
         self.collapse_btn.setToolTip("Expand Sidebar" if collapsed else "Collapse Sidebar")
-        # Collapsed: the appearance button stacks *above*; the collapse button stays put.
+        # Collapsed: the appearance and quit buttons stack *above*; the collapse button stays put.
         self._bottom.setDirection(QHBoxLayout.Direction.BottomToTop if collapsed else QHBoxLayout.Direction.LeftToRight)
         self._bottom.setContentsMargins(15, 8, 15 if collapsed else 10, 0)
         self._relayout()

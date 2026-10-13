@@ -6,7 +6,7 @@ import logging
 import os
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from aria import providers
 from aria.core import health, tasks
@@ -15,7 +15,7 @@ from aria.ui import icons
 from aria.ui.player_bar import ElidedLabel
 from aria.ui.theme import theme
 from aria.ui.widgets.controls import Button, hbox, label
-from aria.ui.widgets.tracklist import reserve_scrollbar
+from aria.ui.widgets.tracklist import plain_scroll
 
 log = logging.getLogger(__name__)
 ORDER = [health.MISSING, health.BROKEN, health.DUPLICATE, health.EXTRA_COPY, health.ORPHAN]
@@ -64,12 +64,7 @@ class HealthDialog(QDialog):
         self.progress = label("", "Caption")
         col.addLayout(hbox(self.summary, None, self.progress, self.links_btn))
 
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        reserve_scrollbar(self.scroll)
+        self.scroll = plain_scroll()
         col.addWidget(self.scroll, 1)
         done = Button("Done", "primary")
         done.clicked.connect(self.accept)

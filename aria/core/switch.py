@@ -16,9 +16,7 @@ the measured BPM.
 from __future__ import annotations
 
 import logging
-import re
 import time
-from urllib.parse import unquote
 
 from PySide6.QtCore import QObject, Signal
 
@@ -27,7 +25,6 @@ from aria.core.models import SOURCE_LABELS, SPOTIFY, YOUTUBE, Track
 
 log = logging.getLogger("switch")
 
-_SPOTIFY_TRACK = re.compile(r"open\.spotify\.com/(?:intl-[\w-]+/)?track/([A-Za-z0-9]{22})")
 MAX_CANDIDATES = 4
 PAUSE = 0.8                     # seconds between songs: a web search per song, politely spaced
 
@@ -39,45 +36,20 @@ def target_of(track: Track) -> str | None:
 
 # ---- matching (blocking: run off the GUI thread) ---------------------------------------
 
-_SPLIT = re.compile(r"\s+[-–—|｜/]\s+")
-_DECOR = re.compile(r"[\[［(（【][^\]］)）】]*[\]］)）】]")
-
-
-def _is_artist(part: str, channel: str) -> bool:
-    p, c = textnorm.artist_key(part), textnorm.artist_key(channel)
-    if not p or not c:
-        return False
-    if p in c or c in p:
-        return True
-    words = [textnorm.artist_key(w) for w in re.split(r"\s{2,}|\s*[/&,、×]\s*|\s+x\s+", part) if w.strip()]
-    return any(w and len(w) > 1 and w in c for w in words)
-
-
 def _song(track: Track) -> tuple[str, str]:
-    """(song name, artist) behind a video title."""
-    channel = textnorm.clean_channel(track.artist)
-    parts = [x.strip() for x in _SPLIT.split(_DECOR.sub(" ", track.title)) if x.strip()]
-    if len(parts) >= 2:
-        # "Artist - Song" (or "Song - Artist"): the side that names the channel is the artist
-        for i, part in enumerate(parts[:2]):
-            if _is_artist(part, channel):
-                other = parts[1 - i]
-                return textnorm.display_title(other, part) or other, re.split(r"\s{2,}", part)[0]
-    artist = textnorm.artist_of(track.title, track.artist) or channel
-    return textnorm.display_title(track.title, artist), artist
+    """(song name, artist) behind a video title (the listener's corrections first)."""
+    from aria.core import identity
+    ident = identity.of(track)
+    return ident.title, ident.artist or identity.clean_uploader(track.artist)
 
 
 def _spotify_candidates(name: str, artist: str) -> list[str]:
-    from aria.providers import http
-    seen: list[str] = []
+    from aria import providers
     for q in (f"{artist} {name} spotify", f"{name} {artist} open.spotify.com track", f"{name} spotify"):
-        r = http.session().get("https://search.yahoo.com/search", params={"p": q}, timeout=http.TIMEOUT)
-        for sid in _SPOTIFY_TRACK.findall(unquote(unquote(r.text))):
-            if sid not in seen:
-                seen.append(sid)
-        if seen:
-            break
-    return seen[:MAX_CANDIDATES]
+        found = providers.spotify.find_links(q, "track")
+        if found:
+            return found[:MAX_CANDIDATES]
+    return []
 
 
 def _score(want: Track, name: str, artist: str, cand: Track) -> float | None:
@@ -108,13 +80,13 @@ def find_spotify(track: Track) -> Track | None:
         try:
             cand = providers.spotify.parse(f"https://open.spotify.com/track/{sid}")[0]
         except Exception:
-            log.info("  ✗ %s unreadable", sid)
+            log.debug("  ✗ %s unreadable", sid)
             continue
         s = _score(track, name, artist, cand)
         if s is None:
-            log.info("  ✗ “%s” · %s", cand.title, cand.artist)
+            log.debug("  ✗ “%s” · %s", cand.title, cand.artist)
         else:
-            log.info("  ✓ “%s” · %s · %.1f", cand.title, cand.artist, s)
+            log.debug("  ✓ “%s” · %s · %.1f", cand.title, cand.artist, s)
         if s is not None and (best_score is None or s > best_score):
             best, best_score = cand, s
     if best is None:
@@ -217,6 +189,8 @@ class SourceSwitcher(QObject):
             self.pb.listening.rekey(old_key, new)
         if self.pb.tempo is not None:
             self.pb.tempo.rekey(old_key, new.key)
+        from aria.core import identity
+        identity.overrides().move(old_key, new.key)        # corrected song info goes with the song
         self.library.replace(old_key, new)
         self.playlists.replace(old_key, new)
         self.pb.replace_track(old_key, new)

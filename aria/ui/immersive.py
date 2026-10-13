@@ -3,14 +3,20 @@
 It's its own window over the main one, driven by the same Playback, so going in or
 out never interrupts the music (queue, volume, Tempo Flow and cross-fades carry on).
 
-Two layouts: Centered Artwork (cover in the middle, title beneath, a few lines of
-lyrics under it) and Editorial (cover on the left, title and the full lyrics on
-the right). Without lyrics it stays a quiet cover-only page.
+Two layouts (V switches, the choice is remembered):
 
-Kept light on resources: the backdrop (a blurred, muted cover), the cover with its
-shadow and the title are painted once per song or window size into one cached
-image. After that only the lyrics, the thin progress line and the controls ever
-repaint. The controls appear when the mouse moves and fade after 3 s.
+* Editorial Lyrics — the title and large synced lyrics on the left, a big square cover on
+  the right, over a blurred, muted backdrop of the cover. No lyrics: the title alone.
+* Collage — the whole screen a mosaic of square covers of the songs coming up (queue first,
+  For You after), each with its name on it; the playing song is the big square in the middle
+  with its lyrics, play / pause and progress right on the cover. The covers can be clicked,
+  right-clicked and reached from the keyboard; they change only when Collage opens or the
+  song changes (see :mod:`aria.ui.collage`).
+
+Kept light on resources: the background and the front (cover, shadow, title, card) are each
+painted once per song or window size into a cached image. After that only the lyrics, the thin
+progress line and the controls ever repaint. The controls appear when the mouse moves and fade
+after 3 s.
 Volume: the slider in the controls, ↑ / ↓, or the mouse wheel away from the lyrics.
 """
 
@@ -23,14 +29,15 @@ from PySide6.QtWidgets import QAbstractButton, QGraphicsOpacityEffect, QHBoxLayo
 from aria.core.models import format_duration
 from aria.core.player import LOADING, PLAYING
 from aria.ui import icons
-from aria.ui.theme import UI_FAMILIES
+from aria.ui.collage import CollageView
+from aria.ui.theme import UI_FAMILIES, radius
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets import tint as tint_mod
 from aria.ui.widgets.thumbs import ART_HEIGHT, artwork_urls
 from aria.ui.widgets.lyrics_view import LyricsView
 
 IDLE_MS = 3000
-CENTERED, EDITORIAL = "centered", "editorial"
+EDITORIAL, GALLERY = "editorial", "collage"       # GALLERY: the Collage layout ("gallery" in older settings)
 
 
 SEEK_STEP = 5                  # seconds ←/→ jump
@@ -42,6 +49,12 @@ def _font(px: int, weight=QFont.Weight.Normal) -> QFont:
     f.setPixelSize(px)
     f.setWeight(weight)
     return f
+
+
+def bar(p: QPainter, r: QRectF) -> None:
+    """A thin line (progress, volume) whose corners keep below a third of its shortest side."""
+    k = radius(r.height() / 2, r.width(), r.height())
+    p.drawRoundedRect(r, k, k)
 
 
 class GlassButton(QAbstractButton):
@@ -75,12 +88,13 @@ class GlassButton(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         p.setPen(Qt.PenStyle.NoPen)
+        rr = radius(r.width(), r.width(), r.height())          # §0.2: rounded squares, not discs
         if self.solid:
             p.setBrush(QColor(255, 255, 255, 235 if self._hover else 215))
-            p.drawEllipse(r)
+            p.drawRoundedRect(r, rr, rr)
         elif self._hover or self.isChecked():
             p.setBrush(QColor(255, 255, 255, 34 if self._hover else 22))
-            p.drawEllipse(r)
+            p.drawRoundedRect(r, rr, rr)
         color = QColor(20, 20, 22) if self.solid else QColor(255, 255, 255, 235 if (self._hover or self.isChecked()) else 180)
         s = self.icon_px
         p.drawPixmap(QRect((self.width() - s) // 2, (self.height() - s) // 2, s, s), icons.pixmap(self.icon_name, color, s))
@@ -149,12 +163,12 @@ class GlassSlider(QWidget):
         t = self._track()
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 50))
-        p.drawRoundedRect(t, 1.5, 1.5)
+        bar(p, t)
         x = t.left() + t.width() * self.value / 100
         p.setBrush(QColor(255, 255, 255, 210))
-        p.drawRoundedRect(QRectF(t.left(), t.top(), x - t.left(), t.height()), 1.5, 1.5)
+        bar(p, QRectF(t.left(), t.top(), x - t.left(), t.height()))
         r = 7 if (self._hover or self._drag) else 5
-        p.drawEllipse(QRectF(x - r, t.center().y() - r, 2 * r, 2 * r))
+        p.drawEllipse(QRectF(x - r, t.center().y() - r, 2 * r, 2 * r))     # knobs stay round (§0.2 exempts them)
         p.end()
 
 
@@ -163,6 +177,7 @@ class Controls(QWidget):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.pill = False                      # Collage: a dark rounded back, so the buttons read over the covers
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
@@ -194,12 +209,30 @@ class Controls(QWidget):
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.fade.finished.connect(self._faded)
 
+    def set_pill(self, on: bool) -> None:
+        if on != self.pill:
+            self.pill = on
+            self.play.solid = not on               # Collage: plain like the buttons beside it
+            self.play.update()
+            self.layout().setContentsMargins(14 if on else 0, 0, 14 if on else 0, 0)
+            self.update()
+
+    def paintEvent(self, _e):
+        if self.pill:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QColor(255, 255, 255, 22))
+            p.setBrush(QColor(14, 14, 18, 215))
+            r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            p.drawRoundedRect(r, radius(18, r.width(), r.height()), radius(18, r.width(), r.height()))
+            p.end()
+
     def _faded(self) -> None:
         if self.fade.endValue() == 0.0:
             self.setVisible(False)
 
     def sizeHint(self) -> QSize:
-        return QSize(36 * 2 + (18 + 110 - 36) + 44 * 2 + 56 + 18 + 36 + 110 + 36 + 10 * 8, 60)
+        return QSize(36 * 2 + (18 + 110 - 36) + 44 * 2 + 56 + 18 + 36 + 110 + 36 + 10 * 8 + (28 if self.pill else 0), 60)
 
     def show_animated(self, on: bool) -> None:
         target = 1.0 if on else 0.0
@@ -215,7 +248,7 @@ class Controls(QWidget):
 class ImmersiveView(QWidget):
     closed = Signal()
 
-    def __init__(self, playback, settings, source_lyrics: LyricsView):
+    def __init__(self, playback, settings, source_lyrics: LyricsView, actions=None):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Aria — Immersive")
         self.setMouseTracking(True)
@@ -223,11 +256,20 @@ class ImmersiveView(QWidget):
         self.pb = playback
         self.settings = settings
         self.source = source_lyrics                    # Now Playing's lyrics: fetched once, shown twice
-        self._static: QPixmap | None = None
+        self._static: QPixmap | None = None           # the front: cover, title (and Collage's card)
         self._static_key = None
+        self._back: QPixmap | None = None             # Editorial's blurred backdrop
+        self._back_key = None
         self._pos = 0.0
         self._len = 0.0
 
+        self.collage = CollageView(self, playback, actions)
+        self.collage.hide()
+        self.collage_play = GlassButton("pause", "Play / Pause", 32, 15)     # on the middle square's foot
+        self.collage_play.setParent(self.collage)
+        self.collage_play.clicked.connect(playback.toggle)
+        self.collage.transition.connect(self._on_transition)
+        self.collage.relaid.connect(self._arrange)      # the middle square moved: lyrics and play button follow
         self.lyrics = LyricsView(self, immersive=True)
         self.lyrics.seek.connect(playback.seek)
         self.controls = Controls(self)
@@ -270,6 +312,7 @@ class ImmersiveView(QWidget):
         self.activateWindow()
         self.setFocus()
         self._wake()
+        QTimer.singleShot(0, self._refill)
 
     def closeEvent(self, e):
         self._idle.stop()
@@ -329,11 +372,13 @@ class ImmersiveView(QWidget):
 
     @property
     def layout_mode(self) -> str:
-        return EDITORIAL if self.settings["immersive_layout"] == EDITORIAL else CENTERED
+        return GALLERY if self.settings["immersive_layout"] in (GALLERY, "gallery") else EDITORIAL
 
     def toggle_layout(self) -> None:
-        self.settings["immersive_layout"] = CENTERED if self.layout_mode == EDITORIAL else EDITORIAL
+        """Editorial Lyrics ⇄ Collage; the music, queue, lyrics and progress carry on untouched."""
+        self.settings["immersive_layout"] = EDITORIAL if self.layout_mode == GALLERY else GALLERY
         self._arrange()
+        self._refill()
 
     def toggle_lyrics(self) -> None:
         self.settings["immersive_lyrics"] = not self.settings["immersive_lyrics"]
@@ -379,60 +424,71 @@ class ImmersiveView(QWidget):
 
     def _on_track(self, _t) -> None:
         self._arrange()
+        self._refill(crossfade=True)
+
+    def _refill(self, crossfade: bool = False) -> None:
+        """Who's on the Collage: only on opening it and when the song changes."""
+        if self.layout_mode == GALLERY and self.isVisible():
+            self.collage.refill(crossfade)
 
     def _on_thumb(self, key: str) -> None:
-        """Only the playing song's artwork arriving matters here (it may change the cover's shape)."""
+        """Only the playing song's artwork arriving matters here."""
         t = self.pb.current
         if t and self.isVisible() and key == thumbs_mod.instance().key(artwork_urls(t), ART_HEIGHT):
             self._arrange()
 
     def _on_state(self, s: str) -> None:
-        self.controls.play.set_icon("pause" if s in (PLAYING, LOADING) else "play")
+        icon = "pause" if s in (PLAYING, LOADING) else "play"
+        self.controls.play.set_icon(icon)
+        self.collage_play.set_icon(icon)
+        self.collage.on_state(s)
+
+    def _on_transition(self, moving: bool) -> None:
+        """Collage's move to a clicked square: the middle square's lyrics and button sit it out."""
+        if self.layout_mode == GALLERY:
+            self.collage_play.setVisible(not moving)
+            self.lyrics.setVisible(not moving and "lyrics" in self._boxes())
 
     def _on_position(self, pos: float, length: float) -> None:
         self._pos, self._len = pos, length
         if self.isVisible():
             self.lyrics.set_position(pos)
-            self.update(self._progress_rect().adjusted(-74, -24, 74, 4))  # just the progress line and its times
+            if self.layout_mode == GALLERY:
+                self.collage.set_progress(pos, length)            # on the middle square's foot
+            else:
+                self.update(self._progress_rect().adjusted(-74, -24, 74, 4))  # just the progress line and its times
 
     # ---- geometry --------------------------------------------------------------
 
     def _boxes(self) -> dict:
-        """Where everything goes for the current layout and size."""
+        """Where everything goes for the current layout and size (controls keep the bottom ~130 px)."""
         W, H = self.width(), self.height()
         lyr = self._has_lyrics()
         m = max(40, int(min(W, H) * 0.07))
+        bottom = H - 130
         out = {}
-        if self.layout_mode == EDITORIAL:
-            side = int(min(H - 2 * m - 40, W * (0.42 if lyr else 0.46)))
-            sz = self._fit(side, W * 0.5)
-            cover = QRect(m + int(W * 0.03), (H - sz.height()) // 2 - 20, sz.width(), sz.height())
-            text_x = cover.right() + int(W * 0.06)
-            text_w = W - text_x - m
-            out["cover"] = cover
+        if self.layout_mode == GALLERY:
+            # the middle square of the mosaic: the lyrics go on its cover
+            out["card"] = out["cover"] = self.collage.centre.toRect()
             if lyr:
-                top = min(cover.top(), int(H * 0.12))
-                out["title"] = QRect(text_x, top, text_w, int(H * 0.17))
-                lyr_top = out["title"].bottom() + 16
-                out["lyrics"] = QRect(text_x, lyr_top, text_w, H - 130 - lyr_top)   # down to the controls
-            else:
-                out["title"] = QRect(text_x, cover.center().y() - int(H * 0.09), text_w, int(H * 0.18))
+                out["lyrics"] = self.collage.lyrics_rect().toRect()
+            out["title"] = QRect()
             out["align"] = Qt.AlignmentFlag.AlignLeft
+            return out
+        # Editorial Lyrics: words on the left, a large square cover on the right
+        side = int(min(H * 0.62, W * 0.40, bottom - m))         # always square (a video frame is cropped)
+        cover = QRect(W - m - int(W * 0.03) - side, (bottom - side) // 2 + 20, side, side)
+        text_x = m + int(W * 0.03)
+        text_w = max(200, cover.left() - int(W * 0.06) - text_x)
+        out["cover"] = cover
+        if lyr:
+            top = max(m // 2, int(H * 0.09))
+            out["title"] = QRect(text_x, top, text_w, int(H * 0.16))
+            lyr_top = out["title"].bottom() + 12
+            out["lyrics"] = QRect(text_x, lyr_top, text_w, bottom - lyr_top)
         else:
-            if lyr:
-                side = int(min(H * 0.42, W * 0.36))
-                sz = self._fit(side, W * 0.5)
-                cover = QRect((W - sz.width()) // 2, int(H * 0.08), sz.width(), sz.height())
-                out["title"] = QRect(m, cover.bottom() + 22, W - 2 * m, 74)
-                top = out["title"].bottom() + 6
-                out["lyrics"] = QRect(int(W * 0.18), top, int(W * 0.64), H - top - 120)
-            else:
-                side = int(min(H * 0.6, W * 0.5))
-                sz = self._fit(side, W * 0.62)
-                cover = QRect((W - sz.width()) // 2, int((H - sz.height()) / 2) - 50, sz.width(), sz.height())
-                out["title"] = QRect(m, cover.bottom() + 28, W - 2 * m, 80)
-            out["cover"] = cover
-            out["align"] = Qt.AlignmentFlag.AlignHCenter
+            out["title"] = QRect(text_x, cover.center().y() - int(H * 0.09), text_w, int(H * 0.2))
+        out["align"] = Qt.AlignmentFlag.AlignLeft
         return out
 
     def _progress_rect(self) -> QRect:
@@ -441,12 +497,23 @@ class ImmersiveView(QWidget):
         return QRect((W - w) // 2, H - 34, w, 3)
 
     def _arrange(self) -> None:
+        collage = self.layout_mode == GALLERY
+        self.collage.setVisible(collage)
+        if collage:
+            self.collage.setGeometry(self.rect())
+            self.collage.place()
+            self.collage.lower()
+            self.collage_play.setGeometry(self.collage.play_rect().toRect())
         boxes = self._boxes()
         lyr = "lyrics" in boxes
-        self.lyrics.setVisible(lyr)
+        self.lyrics.setVisible(lyr and not (collage and self.collage.busy))
+        self.collage_play.setVisible(collage and not self.collage.busy)
         if lyr:
-            self.lyrics.set_centered(self.layout_mode == CENTERED)
+            # Collage: sized once to the middle square (never to a line), so lines fit and don't jump
+            self.lyrics.scale = max(18, min(34, round(self.collage.centre.height() / 15))) if collage else 27
+            self.lyrics.set_centered(False)
             self.lyrics.setGeometry(boxes["lyrics"])
+        self.controls.set_pill(collage)
         hint = self.controls.sizeHint()
         self.controls.setGeometry((self.width() - hint.width()) // 2, self.height() - 108, hint.width(), hint.height())
         self.controls.raise_()
@@ -459,7 +526,7 @@ class ImmersiveView(QWidget):
     # ---- the cached backdrop ---------------------------------------------------
 
     def _invalidate(self) -> None:
-        self._static_key = None
+        self._static_key = self._back_key = None
         self.update()
 
     def _cover(self):
@@ -468,30 +535,16 @@ class ImmersiveView(QWidget):
         pm = thumbs_mod.instance().get(artwork_urls(t), ART_HEIGHT) if t else None
         return pm if pm is not None and not pm.isNull() else None
 
-    def _aspect(self) -> float:
-        pm = self._cover()
-        return pm.width() / pm.height() if pm is not None and pm.height() else 1.0
-
-    def _fit(self, side: int, cap_w: float) -> QSize:
-        """Square covers stay square; a wide video frame keeps its shape."""
-        ar = self._aspect()
-        if ar < 1.15:
-            return QSize(side, side)
-        w = int(min(cap_w, side * 1.35))
-        return QSize(w, int(w / ar))
-
-    def _render_static(self) -> QPixmap:
-        """Backdrop + cover + shadow + title, painted once per song / size / layout."""
+    def _backdrop(self) -> QPixmap:
+        """Editorial's background: the cover, blurred and muted (once per song and size)."""
         dpr = self.devicePixelRatioF()
         W, H = self.width(), self.height()
         out = QPixmap(int(W * dpr), int(H * dpr))
         out.setDevicePixelRatio(dpr)
         p = QPainter(out)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         cover = self._cover()
-        hs = tint_mod.hue_of(cover) if cover is not None else None
-        base = tint_mod.surface(hs, "canvas")
+        base = self._base()
         p.fillRect(QRect(0, 0, W, H), base)
         if cover is not None:
             # a heavy blur for free: shrink to a few pixels, then let smooth scaling spread it out
@@ -502,7 +555,6 @@ class ImmersiveView(QWidget):
             p.setOpacity(0.30)
             p.drawPixmap(QRect(-W // 10, -H // 10, int(W * 1.2), int(H * 1.2)), mid)
             p.setOpacity(1.0)
-        # muted and quiet: a veil in the base colour, darker towards the edges
         veil = QColor(base)
         veil.setAlphaF(0.55)
         p.fillRect(QRect(0, 0, W, H), veil)
@@ -510,20 +562,36 @@ class ImmersiveView(QWidget):
         vg.setColorAt(0.0, QColor(0, 0, 0, 0))
         vg.setColorAt(1.0, QColor(0, 0, 0, 120))
         p.fillRect(QRect(0, 0, W, H), vg)
+        p.end()
+        return out
 
+    def _base(self) -> QColor:
+        cover = self._cover()
+        return tint_mod.surface(tint_mod.hue_of(cover) if cover is not None else None, "canvas")
+
+    def _front(self) -> QPixmap:
+        """Editorial's cover, its shadow and the title: transparent, once per song / size."""
+        dpr = self.devicePixelRatioF()
+        W, H = self.width(), self.height()
+        out = QPixmap(int(W * dpr), int(H * dpr))
+        out.setDevicePixelRatio(dpr)
+        out.fill(Qt.GlobalColor.transparent)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         boxes = self._boxes()
+        cover = self._cover()
         cr = QRectF(boxes["cover"])
-        radius = min(cr.width(), cr.height()) * 0.025
-        for k in range(14, 0, -2):                     # soft shadow under the cover
+        radius = min(cr.width(), cr.height()) * 0.03
+        for k in range(10, 0, -2):                     # a very light shadow under the cover
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, 10))
-            p.drawRoundedRect(cr.adjusted(-k, -k + 10, k, k + 14), radius + k, radius + k)
+            p.setBrush(QColor(0, 0, 0, 7))
+            p.drawRoundedRect(cr.adjusted(-k, -k + 8, k, k + 10), radius + k, radius + k)
         clip = QPainterPath()
         clip.addRoundedRect(cr, radius, radius)
         p.save()
         p.setClipPath(clip)
         if cover is not None:
-            # fill the box, cropping only what doesn't fit its shape
             ar_box = cr.width() / cr.height()
             sw, sh = cover.width(), cover.height()
             if sw / sh > ar_box:
@@ -541,17 +609,19 @@ class ImmersiveView(QWidget):
         t = self.pb.current
         tr = boxes["title"]
         align = boxes["align"]
-        editorial = self.layout_mode == EDITORIAL
-        title_px = max(22, min(46 if editorial else 30, int(H / (18 if editorial else 28))))
+        title_px = max(22, min(44, int(H / 20)))
+        if "lyrics" not in boxes:
+            title_px = max(26, min(54, int(H / 16)))     # no lyrics: the title carries the page
         tf, af = _font(title_px, QFont.Weight.DemiBold), _font(int(title_px * 0.55))
-        title = t.title if t else "Nothing playing"
-        artist = " · ".join(x for x in ((t.artist if t else ""), (t.source_label if t else "")) if x)
+        from aria.core import identity
+        title, who = identity.display(t) if t else ("Nothing playing", "")
+        artist = " · ".join(x for x in (who, (t.source_label if t else "")) if x)
         fm = QFontMetrics(tf)
         flags = align | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap
         lines = fm.boundingRect(QRect(0, 0, tr.width(), 10_000), flags, title).height()
-        max_h = fm.lineSpacing() * (2 if editorial else 1)
-        if lines > max_h or not editorial:
-            title = fm.elidedText(title, Qt.TextElideMode.ElideRight, tr.width() * (2 if editorial else 1) - 10)
+        max_h = fm.lineSpacing() * 2
+        if lines > max_h:
+            title = fm.elidedText(title, Qt.TextElideMode.ElideRight, tr.width() * 2 - 10)
         p.setFont(tf)
         p.setPen(QColor(255, 255, 255, 240))
         title_rect = QRect(tr.left(), tr.top(), tr.width(), min(max_h, lines) + 4)
@@ -565,25 +635,45 @@ class ImmersiveView(QWidget):
         return out
 
     def paintEvent(self, e):
-        key = (self.pb.current.key if self.pb.current else None, self.width(), self.height(), self.layout_mode,
-               self._has_lyrics(), self._cover() is not None)
-        if self._static is None or key != self._static_key:
-            self._static = self._render_static()
-            self._static_key = key
+        gallery_mode = self.layout_mode == GALLERY
         p = QPainter(self)
         r = e.rect()
-        p.drawPixmap(r, self._static, QRectF(QRectF(r).topLeft() * self._static.devicePixelRatio(),
-                                              QRectF(r).size() * self._static.devicePixelRatio()).toRect())
+
+        def blit(pm, opacity=1.0):
+            if pm is None:
+                return
+            p.setOpacity(opacity)
+            d = pm.devicePixelRatio()
+            if round(pm.width() / d) == self.width() and round(pm.height() / d) == self.height():
+                p.drawPixmap(r, pm, QRectF(QRectF(r).topLeft() * d, QRectF(r).size() * d).toRect())
+            else:
+                p.drawPixmap(self.rect(), pm)            # made for another size: stretch until redone
+            p.setOpacity(1.0)
+
+        if gallery_mode:
+            p.fillRect(r, QColor(8, 8, 10))                 # between the squares; they paint the rest
+            p.end()
+            return
+        else:
+            bkey = (self.pb.current.key if self.pb.current else None, self.width(), self.height(),
+                    self._cover() is not None)
+            if self._back is None or bkey != self._back_key:
+                self._back, self._back_key = self._backdrop(), bkey
+            blit(self._back)
+        fkey = (self.pb.current.key if self.pb.current else None, self.width(), self.height(), self.layout_mode,
+                self._has_lyrics(), self._cover() is not None)
+        if self._static is None or fkey != self._static_key:
+            self._static, self._static_key = self._front(), fkey
+        blit(self._static)
         # thin progress line with the times at its ends
         pr = self._progress_rect()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 40))
-        p.drawRoundedRect(QRectF(pr), 1.5, 1.5)
+        bar(p, QRectF(pr))
         if self._len > 0:
             p.setBrush(QColor(255, 255, 255, 200))
-            p.drawRoundedRect(QRectF(pr.left(), pr.top(), pr.width() * min(1.0, self._pos / self._len), pr.height()),
-                              1.5, 1.5)
+            bar(p, QRectF(pr.left(), pr.top(), pr.width() * min(1.0, self._pos / self._len), pr.height()))
             p.setFont(_font(12))
             p.setPen(QColor(255, 255, 255, 130))
             p.drawText(QRect(pr.left() - 70, pr.top() - 8, 60, 18), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -594,7 +684,8 @@ class ImmersiveView(QWidget):
 
     def mousePressEvent(self, e):
         pr = self._progress_rect().adjusted(-4, -10, 4, 10)
-        if e.button() == Qt.MouseButton.LeftButton and pr.contains(e.position().toPoint()) and self._len > 0:
+        if e.button() == Qt.MouseButton.LeftButton and pr.contains(e.position().toPoint()) and self._len > 0 \
+                and self.layout_mode != GALLERY:
             frac = (e.position().x() - pr.left() - 4) / max(1, pr.width() - 8)
             self.pb.seek(max(0.0, min(1.0, frac)) * self._len)
         self._wake()

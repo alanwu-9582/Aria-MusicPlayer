@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextvars
 import re
+from pathlib import Path
 from typing import Callable
 
 from aria import paths
@@ -38,8 +40,11 @@ def safe_filename(name: str, limit: int = 80) -> str:
     return name[:limit] or "track"
 
 
+FOLDER: contextvars.ContextVar[Path | None] = contextvars.ContextVar("audio_folder", default=None)
+
+
 def audio_template(track: Track) -> str:
-    """yt-dlp output template inside the audio folder."""
+    """yt-dlp output template inside the audio folder (or ``FOLDER``, for a throwaway copy)."""
     named = track.artist and track.artist.casefold() not in track.title.casefold()
     base = safe_filename(f"{track.artist} - {track.title}" if named else track.title)
-    return str(paths.AUDIO_DIR / f"{base} [{safe_filename(track.id, 40)}].%(ext)s")
+    return str((FOLDER.get() or paths.AUDIO_DIR) / f"{base} [{safe_filename(track.id, 40)}].%(ext)s")

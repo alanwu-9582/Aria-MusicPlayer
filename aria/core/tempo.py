@@ -101,8 +101,10 @@ def read_wav(path: str):
 _vlc_lock = threading.Lock()
 
 
-def decode_excerpt(src: str, dst: str, headers: dict | None = None, timeout: float = 45.0) -> bool:
-    """30 s of ``src`` as an 11 kHz mono WAV, via VLC's transcoder (faster than real time)."""
+def decode_excerpt(src: str, dst: str, headers: dict | None = None, timeout: float = 45.0,
+                   whole: bool = False, rate: int = 0) -> bool:
+    """30 s of ``src`` (or all of it) as a mono WAV, via VLC's transcoder (faster than real time)."""
+    rate = rate or SAMPLE_RATE
     import vlc  # imported here: aria.core.player has set up the library path
     with _vlc_lock:
         inst = vlc.Instance(["--quiet", "--no-video", "--no-sout-video", "--no-sout-keep"])
@@ -113,10 +115,11 @@ def decode_excerpt(src: str, dst: str, headers: dict | None = None, timeout: flo
                 m.add_option(f":http-referrer={v}")
             elif k.lower() == "user-agent":
                 m.add_option(f":http-user-agent={v}")
-        m.add_option(f":start-time={EXCERPT_START}")
-        m.add_option(f":stop-time={EXCERPT_START + EXCERPT_LEN}")
+        if not whole:
+            m.add_option(f":start-time={EXCERPT_START}")
+            m.add_option(f":stop-time={EXCERPT_START + EXCERPT_LEN}")
         safe = dst.replace("'", "")
-        m.add_option(f":sout=#transcode{{acodec=s16l,channels=1,samplerate={SAMPLE_RATE}}}"
+        m.add_option(f":sout=#transcode{{acodec=s16l,channels=1,samplerate={rate}}}"
                      f":std{{access=file,mux=wav,dst='{safe}'}}")
         mp = inst.media_player_new()
         mp.set_media(m)
@@ -132,7 +135,7 @@ def decode_excerpt(src: str, dst: str, headers: dict | None = None, timeout: flo
         m.release()
     finally:
         inst.release()
-    return os.path.exists(dst) and os.path.getsize(dst) > SAMPLE_RATE * 2 * 8
+    return os.path.exists(dst) and os.path.getsize(dst) > rate * 2 * 8
 
 
 def analyze(track: Track, stream_fn) -> tuple[float, float, str] | None:

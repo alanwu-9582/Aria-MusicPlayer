@@ -4,14 +4,20 @@ Two looks share the code: the side panel (theme colours) and Immersive Mode (lig
 the dark backdrop, larger type, lines fading with distance from the one being sung). When the
 sung line changes, emphasis cross-fades briefly and the text scrolls smoothly — nothing
 repaints while the line stays the same.
+
+A line's translation, when the lyrics have one, sits under it in smaller, quieter type
+(Settings › Lyrics Translation). Lyrics timed word by word fill the sung line as it is sung
+(Settings › Word-by-Word Lyrics): only that line repaints, at the player's position ticks — no
+animation loop. Romanization rows are kept but not shown: the original script is the lyric.
 """
 
 from __future__ import annotations
 
 import time
+import weakref
 
-from PySide6.QtCore import QEasingCurve, QRect, QRectF, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtCore import QEasingCurve, QPointF, QRect, QRectF, Qt, QVariantAnimation, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QTextLayout, QTextOption
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from aria.core.lyrics import Lyrics
@@ -32,11 +38,24 @@ def _mix(a: QColor, b: QColor, t: float) -> QColor:
 class LyricsView(QWidget):
     seek = Signal(float)
     changed = Signal()                           # lyrics or their state changed (Immersive Mode follows)
+    show_trans = True                            # Settings › Lyrics Translation
+    show_words = True                            # Settings › Word-by-Word Lyrics
+    _views: weakref.WeakSet = weakref.WeakSet()
+
+    @classmethod
+    def set_extras(cls, trans: bool, words: bool) -> None:
+        """The two lyric settings changed: every lyrics view re-lays out once."""
+        cls.show_trans, cls.show_words = bool(trans), bool(words)
+        for v in list(cls._views):
+            v._relayout()
+            v._snap()
+            v.update()
 
     def __init__(self, parent=None, immersive: bool = False, centered: bool = False):
         super().__init__(parent)
         self.immersive = immersive
         self.centered = centered
+        self.scale = 36                          # immersive type: window height / scale
         self.lyrics: Lyrics | None = None
         self.state = "empty"                     # empty | loading | none | ready
         self._current = -1
@@ -45,7 +64,10 @@ class LyricsView(QWidget):
         self._offset = 0.0
         self._user_scrolled = 0.0
         self._layout: list[QRect] = []
+        self._main_h: list[int] = []             # per line: the original's height (its translation sits below)
+        self._pos = 0.0
         self._hover = -1
+        LyricsView._views.add(self)
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(420 if immersive else 380)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -79,13 +101,14 @@ class LyricsView(QWidget):
             self._snap()
             self.update()
 
-    def line_text(self, i: int) -> str:
-        return self.lyrics.lines[i][1] if self.lyrics and 0 <= i < len(self.lyrics.lines) else ""
-
     def set_position(self, seconds: float) -> None:
         if not self.lyrics or not self.lyrics.synced:
             return
-        i = self.lyrics.index_at(seconds)
+        self._pos = seconds - self.lyrics.offset
+        i = self.lyrics.index_at(self._pos)                          # + offset = the words come later
+        if i == self._current and self._words_on(i) and 0 <= i < len(self._layout):
+            # word by word: only the sung line repaints
+            self.update(self._layout[i].translated(0, -int(self._offset)).adjusted(-4, -6, 4, 6))
         if i != self._current:
             self._previous, self._current = self._current, i
             self._fade.stop()
@@ -98,7 +121,7 @@ class LyricsView(QWidget):
 
     def _size(self) -> int:
         """Immersive type scales with the screen it's on."""
-        return max(18, min(34, int(self.window().height() / 36))) if self.immersive else 0
+        return max(18, min(44, int(self.window().height() / self.scale))) if self.immersive else 0
 
     def _big(self) -> QFont:
         if not self.immersive:
@@ -125,6 +148,22 @@ class LyricsView(QWidget):
     def _align(self):
         return Qt.AlignmentFlag.AlignHCenter if self.centered else Qt.AlignmentFlag.AlignLeft
 
+    def _small_extra(self) -> QFont:
+        """A translation's type: smaller and lighter than its line."""
+        f = QFont(self._small())
+        f.setPixelSize(max(11, int((self._size() or 15) * 0.62)))
+        f.setWeight(QFont.Weight.Normal)
+        return f
+
+    def _trans(self, i: int) -> str:
+        if not (self.show_trans and self.lyrics and i < len(self.lyrics.trans)):
+            return ""
+        return self.lyrics.trans[i] or ""
+
+    def _words_on(self, i: int) -> bool:
+        return bool(self.show_words and self.lyrics and self.lyrics.word_timed and 0 <= i < len(self.lyrics.words)
+                    and self.lyrics.words[i])
+
     def _anchor(self) -> float:
         return 0.5 if self.immersive else 0.38
 
@@ -140,14 +179,22 @@ class LyricsView(QWidget):
         pad = 8 if self.immersive else 16
         w = max(80, self.width() - 2 * pad)
         fm = QFontMetrics(self._big())                  # size for the largest style so lines never jump
-        for _t, text in self.lyrics.lines:
+        fs = QFontMetrics(self._small_extra())
+        self._main_h = []
+        for i, (_t, text) in enumerate(self.lyrics.lines):
             if not text:
                 y += stanza
                 self._layout.append(QRect(pad, y, w, 0))
+                self._main_h.append(0)
                 continue
             r = fm.boundingRect(QRect(0, 0, w, 10_000), Qt.TextFlag.TextWordWrap, text)
-            self._layout.append(QRect(pad, y, w, r.height()))
-            y += r.height() + gap
+            h = r.height()
+            self._main_h.append(h)
+            tr = self._trans(i)
+            if tr:
+                h += 2 + fs.boundingRect(QRect(0, 0, w, 10_000), Qt.TextFlag.TextWordWrap, tr).height()
+            self._layout.append(QRect(pad, y, w, h))
+            y += h + gap
 
     def _content_height(self) -> int:
         return self._layout[-1].bottom() + 40 if self._layout else 0
@@ -233,7 +280,7 @@ class LyricsView(QWidget):
         i = self._line_at(e.position().toPoint())
         if i >= 0 and self.lyrics and self.lyrics.synced and self.lyrics.lines[i][0] is not None:
             self._user_scrolled = 0
-            self.seek.emit(self.lyrics.lines[i][0])
+            self.seek.emit(max(0.0, self.lyrics.lines[i][0] + self.lyrics.offset))
 
     # ---- painting --------------------------------------------------------------
 
@@ -284,7 +331,70 @@ class LyricsView(QWidget):
                 edge = min(rr.center().y(), self.height() - rr.center().y())
                 if edge < 70:
                     color.setAlphaF(color.alphaF() * max(0.0, edge / 70))
-            p.setFont(self._font(i))
-            p.setPen(color)
-            p.drawText(QRectF(rr), Qt.TextFlag.TextWordWrap | self._align(), text)
+            main = QRectF(rr.left(), rr.top(), rr.width(), self._main_h[i] if i < len(self._main_h) else rr.height())
+            if synced and i == self._current and self._words_on(i):
+                self._paint_words(p, main, i, text, color, rest if i < len(self._layout) else color)
+            else:
+                p.setFont(self._font(i))
+                p.setPen(color)
+                p.drawText(main, Qt.TextFlag.TextWordWrap | self._align(), text)
+            tr = self._trans(i)
+            if tr:
+                quiet = QColor(color)
+                quiet.setAlphaF(quiet.alphaF() * 0.72)
+                p.setFont(self._small_extra())
+                p.setPen(quiet)
+                p.drawText(QRectF(rr.left(), main.bottom() + 2, rr.width(), rr.bottom() - main.bottom()),
+                           Qt.TextFlag.TextWordWrap | self._align(), tr)
         p.end()
+
+    def _sung_chars(self, i: int, text: str) -> int:
+        """How much of line ``i`` has been sung: whole words, and part of the one being sung."""
+        words = self.lyrics.words[i]
+        done = 0
+        for k, (start, chunk) in enumerate(words):
+            if self._pos < start:
+                break
+            end = words[k + 1][0] if k + 1 < len(words) else start + max(0.4, 0.09 * len(chunk))
+            frac = min(1.0, (self._pos - start) / max(0.05, end - start))
+            done += round(len(chunk) * frac) if frac < 1.0 else len(chunk)
+            if frac < 1.0:
+                break
+        return min(len(text), done)
+
+    def _paint_words(self, p: QPainter, rect: QRectF, i: int, text: str, sung: QColor, rest: QColor) -> None:
+        """The sung line, filled word by word: the part sung so far bright, the rest quiet."""
+        layout = QTextLayout(text, self._font(i))
+        opt = QTextOption(self._align())
+        opt.setWrapMode(QTextOption.WrapMode.WordWrap)
+        layout.setTextOption(opt)
+        layout.beginLayout()
+        y = 0.0
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(rect.width())
+            line.setPosition(QPointF(0, y))
+            y += line.height()
+        layout.endLayout()
+        quiet = QColor(rest)
+        quiet.setAlphaF(max(quiet.alphaF(), sung.alphaF() * 0.45))
+        p.setPen(quiet)
+        layout.draw(p, rect.topLeft())
+        done = self._sung_chars(i, text)
+        if done <= 0:
+            return
+        p.save()
+        p.setPen(sung)
+        for k in range(layout.lineCount()):
+            ln = layout.lineAt(k)
+            start = ln.textStart()
+            if done <= start:
+                break
+            x = ln.cursorToX(min(done, start + ln.textLength()))
+            x = x[0] if isinstance(x, tuple) else x
+            nat = ln.naturalTextRect()
+            p.setClipRect(QRectF(rect.left() + nat.left() - 2, rect.top() + ln.y(), x - nat.left() + 2, ln.height()))
+            layout.draw(p, rect.topLeft())
+        p.restore()

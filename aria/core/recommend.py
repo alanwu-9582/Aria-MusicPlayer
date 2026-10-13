@@ -98,7 +98,7 @@ class Recommender:
             try:
                 extra = self.youtube.mix(vid, limit=40, music=False)
             except Exception as exc:
-                log.info("No YouTube mix for variety: %s", exc)
+                log.debug("No YouTube mix for variety: %s", exc)
         together = listened_together(history, mine)
         own = sorted(history[::-1] + library, key=lambda t: -together[artist_id(t)])
         out, seen = [], set(mine)

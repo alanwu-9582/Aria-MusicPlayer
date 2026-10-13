@@ -23,6 +23,7 @@ class TrackActions:
         self.playlists = playlists
         self.toast = toast
         self.switcher = None              # SourceSwitcher, set by the window
+        self.edit_info = None             # Edit Song Info…, set by the window
 
     def add_to_playlist(self, pid: str | None, tracks: list[Track], parent: QWidget) -> None:
         """Add to an existing playlist, or (pid None) ask for a name and create one."""
@@ -207,6 +208,8 @@ class TrackActions:
                 if some:
                     add("switch", text, lambda s=some, tg=target: self.switch_source(s, tg))
         if len(tracks) == 1:
+            if self.edit_info is not None:
+                add("pencil", "Edit Song Info…", lambda: self.edit_info(tracks[0]))
             add("external", "Open Source", lambda: self.open_source(tracks[0]))
             if self.local_path_of(tracks[0]):
                 add("folder", "Show in Folder", lambda: self.reveal(tracks[0]))

@@ -1,11 +1,17 @@
 """Spotify links. Spotify audio is DRM-protected, so tracks are read for their
-metadata (embed page, no account needed) and played through a matching YouTube video."""
+metadata (embed page, no account needed) and played through a matching YouTube video.
+
+Spotify has no search without an account, so finding things (a song's Spotify version, an
+artist and the playlists around them) goes through a web search for open.spotify.com links,
+each then read from Spotify itself."""
 
 from __future__ import annotations
 
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import unquote
 
 from aria.core import textnorm
 from aria.core.models import SPOTIFY, Stream, Track
@@ -13,7 +19,7 @@ from aria.providers import http
 from aria.providers.base import Provider
 from aria.providers.youtube import YouTube
 
-_LINK = re.compile(r"(?:open\.spotify\.com/(?:intl-[\w-]+/)?|spotify:)(track|album|playlist)[/:]([A-Za-z0-9]{22})")
+_LINK = re.compile(r"(?:open\.spotify\.com/(?:intl-[\w-]+/)?|spotify:)(track|album|playlist|artist)[/:]([A-Za-z0-9]{22})")
 _NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S)
 
 
@@ -55,6 +61,12 @@ class Spotify(Provider):
         kind, sid, entity = self._entity(url)
         release = entity.get("releaseDate") or {}
         year = (release.get("isoString") or "")[:4] if isinstance(release, dict) else str(release)[:4]
+        if kind == "artist":
+            # an artist's page carries their top tracks: a playlist named after them
+            name = entity.get("name") or entity.get("title", "")
+            return {"title": f"{name} · Top Tracks", "artist": name, "cover": _cover(entity),
+                    "url": f"https://open.spotify.com/artist/{sid}", "source": SPOTIFY, "year": "",
+                    "tracks": self._tracks(kind, sid, entity), "kind": "playlist"}
         return {"title": entity.get("name") or entity.get("title", ""),
                 "artist": (entity.get("subtitle") or _artists(entity)).replace("\xa0", " "),
                 "cover": _cover(entity), "url": f"https://open.spotify.com/{kind}/{sid}",
@@ -81,6 +93,40 @@ class Spotify(Provider):
                                 url=f"https://open.spotify.com/track/{tid}", thumbnail=cover,
                                 duration=(item.get("duration") or 0) / 1000))
         return tracks
+
+    # ---- finding things (no account: a web search for Spotify links) ------------------
+
+    @staticmethod
+    def find_links(query: str, kind: str = "track") -> list[str]:
+        """Spotify ids of ``kind`` (track | artist | playlist | album) a web search turns up."""
+        r = http.session().get("https://search.yahoo.com/search", params={"p": query}, timeout=http.TIMEOUT)
+        pat = re.compile(rf"open\.spotify\.com/(?:intl-[\w-]+/)?{kind}/([A-Za-z0-9]{{22}})")
+        return list(dict.fromkeys(pat.findall(unquote(unquote(r.text)))))
+
+    def search_artist(self, query: str, playlists: int = 8) -> list[dict]:
+        """An artist's top tracks plus public playlists of their songs, ready for the shelf
+        (each as :meth:`album` returns it). Spotify's own editorial lists can't be read."""
+        artists = self.find_links(f"{query} spotify artist", "artist")[:2]
+        lists = self.find_links(f"{query} spotify playlist", "playlist")[:playlists]
+        urls = [f"https://open.spotify.com/artist/{a}" for a in artists] + \
+               [f"https://open.spotify.com/playlist/{p}" for p in lists]
+
+        def read(url):
+            try:
+                return self.album(url)
+            except Exception:
+                return None                      # private, editorial or gone
+        with ThreadPoolExecutor(5) as ex:
+            found = [a for a in ex.map(read, urls) if a and a["tracks"]]
+        names = [a["artist"] for a in found if "/artist/" in a["url"]] or [query]
+        keys = {textnorm.artist_key(n) for n in names} | {textnorm.artist_key(query)}
+
+        def by_them(a: dict) -> bool:
+            if "/artist/" in a["url"]:
+                return True
+            mine = sum(1 for t in a["tracks"] if any(k and k in textnorm.artist_key(t.artist) for k in keys))
+            return mine >= max(3, len(a["tracks"]) * 0.5)      # mostly their songs
+        return [a for a in found if by_them(a)]
 
     def youtube_match(self, track: Track) -> Track:
         """Find the YouTube upload that best matches a Spotify track."""

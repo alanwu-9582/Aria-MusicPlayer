@@ -84,7 +84,7 @@ def test_parse_duration():
 def test_smart_collection_rules():
     now = time.time()
     lib = [yt("j", "ヨルシカ - 晴る", duration=250, added_at=now - 3 * 86400, local_path=__file__),
-           yt("z", "周杰倫 - 晴天", duration=269, added_at=now - 60 * 86400),
+           yt("z", "周杰倫 - 說好的幸福呢", duration=269, added_at=now - 60 * 86400),
            yt("e", "Coldplay - Yellow", duration=266, added_at=now - 2 * 86400)]
     stats = {"youtube:e": Stat(plays=3, finished=2, last=now)}
     recent = smart.SmartCollection("r", [{"field": "added_within", "value": 30}])
@@ -343,3 +343,57 @@ def test_console_clears_itself_after_the_limit():
     for i in range(7):
         bus.record.emit(applog.LogRecord(0, 20, "x", str(i)))
     assert cleared == [3, 3] and [r.message for r in bus.history] == ["6"]
+
+
+def test_library_order_can_be_changed_by_dragging(tmp_path, monkeypatch):
+    QCoreApplication.instance() or QCoreApplication([])
+    from aria.core.library import Library
+    monkeypatch.setattr(paths, "LIBRARY_FILE", tmp_path / "library.json")
+    lib = Library([yt("1"), yt("2"), yt("3"), yt("4")])
+    lib.move(0, 2)
+    assert [t.id for t in lib.tracks] == ["2", "3", "1", "4"]
+    lib.move(3, 0)
+    assert [t.id for t in lib.tracks] == ["4", "2", "3", "1"]
+
+
+def test_spotify_artist_links_are_recognised():
+    from aria import providers
+    assert providers.spotify.match("https://open.spotify.com/artist/4UK2Lzi6fBfUi9rpDt6cik")
+    assert providers.spotify.match("https://open.spotify.com/intl-ja/artist/4UK2Lzi6fBfUi9rpDt6cik?si=x")
+
+
+# ---- immersive collage ------------------------------------------------------------
+
+def test_collage_is_a_mosaic_of_whole_cell_rectangles_around_the_middle_square():
+    import random
+    from PySide6.QtCore import QPointF
+    from aria.ui import collage
+    for w, h in [(1280, 800), (1600, 1000), (1920, 1080), (2560, 1440), (1366, 768), (1024, 768)]:
+        tiles, centre = collage.layout(w, h, 40)
+        assert abs(centre.width() - centre.height()) < 0.01
+        assert abs(centre.center().x() - w / 2) < 3 and abs(centre.center().y() - h / 2) < 3
+        assert 30 <= len(tiles) <= 44, (w, h, len(tiles))
+        c = (tiles[0].rect.width() + collage.GAP) / tiles[0].cols
+        for i, t in enumerate(tiles):
+            # one unit for all: whole cells, simple ratios
+            assert abs(t.rect.width() - (t.cols * c - collage.GAP)) < 0.01
+            assert abs(t.rect.height() - (t.rows * c - collage.GAP)) < 0.01
+            assert (t.cols, t.rows) in {(a, b) for a, b, _w in collage.SHAPES}
+            assert not t.rect.intersects(centre)
+            assert all(not t.rect.intersects(o.rect) for o in tiles[i + 1:])
+        rng = random.Random(1)
+        for _ in range(300):                                                  # edge to edge: no holes
+            pt = QPointF(rng.uniform(0, w), rng.uniform(0, h))
+            near = [r.adjusted(-collage.GAP, -collage.GAP, collage.GAP, collage.GAP) for r in [centre] + [t.rect for t in tiles]]
+            assert any(r.contains(pt) for r in near)
+    few, _c = collage.layout(1600, 1000, 8)                                   # few songs: fewer, larger squares
+    assert len(few) <= 14
+
+
+def test_collage_picks_queue_first_without_the_current_song_or_repeats():
+    from aria.ui import collage
+    cur = yt("c", "Song C", "A")
+    queue = [yt("q1", "Song 1"), yt("c", "Song C", "A"), yt("q2", "Song 2"), yt("q1", "Song 1")]
+    recs = [yt("r1", "Song 3"), yt("r2", "Song 2 (Official Video)"), yt("r3", "Song 4")]
+    picked = collage.pick(queue, recs, cur, 10)
+    assert [(t.id, src) for t, src in picked] == [("q1", "Queue"), ("q2", "Queue"), ("r1", "For You"), ("r3", "For You")]

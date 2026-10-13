@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics, QPainter
+from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
                                QToolButton, QWidget)
 
@@ -79,10 +79,6 @@ class IconButton(QToolButton):
         self.setAccessibleName(accessible(text))
         self.setToolTip(text if self.show_tip else "")
 
-    def set_tone(self, tone: str) -> None:
-        self._tone = tone
-        self._retint()
-
     def _retint(self) -> None:
         self.setIcon(icons.icon(self._icon, theme.color(self._tone), self._icon_px,
                                 on=theme.color("accent"), disabled=theme.color("tertiary")))
@@ -127,13 +123,26 @@ def hbox(*widgets, spacing: int = 8, margins=(0, 0, 0, 0)) -> QHBoxLayout:
     return lay
 
 
-def expanding(w: QWidget) -> QWidget:
-    w.setSizePolicy(QSizePolicy.Policy.Expanding, w.sizePolicy().verticalPolicy())
-    return w
+def menu_below(anchor: QWidget, menu: QMenu) -> None:
+    """Open ``menu`` under ``anchor`` (the ⋯ buttons that hold the less-used actions)."""
+    menu.exec(anchor.mapToGlobal(QPoint(0, anchor.height() + 4)))
+
+
+def add_item(menu: QMenu, icon: str, text: str, fn, enabled: bool = True):
+    act = menu.addAction(icons.icon(icon, theme.color("label"), 16), text, fn)
+    act.setEnabled(enabled)
+    return act
 
 
 class Toggle(QAbstractButton):
-    """Text toggle (§4.5): outlined when off; an inset accent block with on_accent text when on."""
+    """Setting switch (§4.5): its name on the left, a switch on the right; the whole row flips it.
+
+    Every corner stays under a third of its shape's shortest side — the track is 34 × 20 with
+    radius 6, the knob 14 × 14 with radius 4, the hover row 30 high with radius 6.
+    """
+
+    TRACK_W, TRACK_H, KNOB = 34, 20, 14
+    TRACK_R, KNOB_R, ROW_R = 6.0, 4.0, 6.0
 
     def __init__(self, text: str, tooltip: str = "", parent: QWidget | None = None):
         super().__init__(parent)
@@ -147,10 +156,16 @@ class Toggle(QAbstractButton):
         if tooltip:
             self.setToolTip(tooltip)
         self._hover = False
+        self._pos = 0.0                                  # knob: 0 off … 1 on
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(140)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._move)
+        self.toggled.connect(self._slide)
         theme.changed.connect(self.update)
 
     def sizeHint(self):
-        return QSize(QFontMetrics(font("callout", 600)).horizontalAdvance(self.text()) + 32, ROW)
+        return QSize(QFontMetrics(font("callout")).horizontalAdvance(self.text()) + self.TRACK_W + 28, ROW)
 
     def enterEvent(self, e):
         self._hover = True
@@ -160,24 +175,54 @@ class Toggle(QAbstractButton):
         self._hover = False
         self.update()
 
+    def _slide(self, on: bool) -> None:
+        from aria.ui.widgets import rack as rack_mod
+        self._anim.stop()
+        if not self.isVisible() or rack_mod.reduce_motion:
+            self._move(1.0 if on else 0.0)               # nothing to watch: just be there
+            return
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def _move(self, v) -> None:
+        self._pos = float(v)
+        self.update()
+
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        border = theme.color("accent") if self.hasFocus() else theme.color("tertiary" if self._hover else "separator_hex")
-        p.setPen(border)
-        p.setBrush(theme.color("content"))
-        p.drawRoundedRect(r, 6, 6)
-        if self.isChecked():
+        if not self.isEnabled():
+            p.setOpacity(0.45)
+        r = QRectF(self.rect())
+        if self._hover and self.isEnabled():
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(theme.color("accent"))
-            p.drawRoundedRect(r.adjusted(2.5, 2.5, -2.5, -2.5), 4, 4)
-        on = self.isChecked()
-        p.setFont(font("callout", 600 if on else 400))
-        p.setPen(theme.color("on_accent" if on else ("label" if self._hover else "secondary")))
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
+            p.setBrush(theme.color("fill"))
+            p.drawRoundedRect(r, self.ROW_R, self.ROW_R)
+        track = QRectF(r.right() - 8 - self.TRACK_W, (r.height() - self.TRACK_H) / 2, self.TRACK_W, self.TRACK_H)
+        # the name, cut short rather than running under the switch
+        p.setFont(font("callout"))
+        p.setPen(theme.color("label"))
+        text_r = QRectF(8, 0, track.left() - 16, r.height())
+        p.drawText(text_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   QFontMetrics(p.font()).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(text_r.width())))
+        # track: grey when off, accent when on (blended while the knob travels)
+        off, on = theme.color("fill_strong"), theme.color("accent")
+        t = self._pos
+        fill = QColor.fromRgbF(off.redF() + (on.redF() - off.redF()) * t, off.greenF() + (on.greenF() - off.greenF()) * t,
+                               off.blueF() + (on.blueF() - off.blueF()) * t, off.alphaF() + (on.alphaF() - off.alphaF()) * t)
+        p.setPen(theme.color("accent") if self.hasFocus() else Qt.PenStyle.NoPen)
+        p.setBrush(fill)
+        p.drawRoundedRect(track, self.TRACK_R, self.TRACK_R)
+        pad = (self.TRACK_H - self.KNOB) / 2
+        knob = QRectF(track.left() + pad + (self.TRACK_W - self.KNOB - 2 * pad) * t, track.top() + pad,
+                      self.KNOB, self.KNOB)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 40))
+        p.drawRoundedRect(knob.translated(0, 0.8), self.KNOB_R, self.KNOB_R)
+        p.setBrush(QColor("#ffffff"))
+        p.drawRoundedRect(knob, self.KNOB_R, self.KNOB_R)
         p.end()
-
 
 class CheckBox(QAbstractButton):
     """16 px box (radius 4) + callout text; checked = accent fill with a check mark."""

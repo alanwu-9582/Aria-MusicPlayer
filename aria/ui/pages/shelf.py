@@ -12,8 +12,8 @@ import random
 from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QUrl, QVariantAnimation, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
-from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLineEdit, QMenu, QScrollArea, QStackedWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLineEdit, QMenu, QStackedWidget, QVBoxLayout,
+                               QWidget)
 
 from aria import providers
 from aria.core import tasks
@@ -29,7 +29,7 @@ from aria.ui.widgets import rack as rack_mod
 from aria.ui.widgets.dialogs import confirm
 from aria.ui.widgets.rack import RackItem, RackPanel, RackView
 from aria.ui.widgets.segmented import Segmented
-from aria.ui.widgets.tracklist import RowAction, TrackListView, paint_empty, reserve_scrollbar
+from aria.ui.widgets.tracklist import RowAction, TrackListView, paint_empty, plain_scroll
 
 log = logging.getLogger(__name__)
 
@@ -432,9 +432,9 @@ class AlbumView(QWidget):
         notes.addSpacing(10)
         self.play_btn = Button("Play", "primary", icon="play")
         self.shuffle_btn = Button("Shuffle", icon="shuffle")
-        self.queue_btn = Button("Add to Queue", icon="queue-add")
+        self.download_btn = Button("Download", icon="download")
         self.open_btn = Button("Open Source", "borderless", icon="external")
-        notes.addLayout(hbox(self.play_btn, self.shuffle_btn, self.queue_btn, self.open_btn, None))
+        notes.addLayout(hbox(self.play_btn, self.shuffle_btn, self.download_btn, self.open_btn, None))
         notes.addStretch(1)
         top.addLayout(notes, 1)
         lay.addLayout(top)
@@ -453,7 +453,8 @@ class AlbumView(QWidget):
 
         self.play_btn.clicked.connect(lambda: self._play_from(0))
         self.shuffle_btn.clicked.connect(self._shuffle)
-        self.queue_btn.clicked.connect(lambda: self.album and actions.enqueue(tracks_of(self.album)))
+        self.download_btn.clicked.connect(self._download_all)
+        actions.library.track_updated.connect(lambda _k: self.isVisible() and self._update_download())
         self.open_btn.clicked.connect(lambda: self.album and QDesktopServices.openUrl(QUrl(self.album.url)))
 
     def show_album(self, a: Album) -> None:
@@ -471,11 +472,28 @@ class AlbumView(QWidget):
         self.meta.setText(" · ".join(b for b in bits if b))
         self.open_btn.setVisible(bool(a.url))
         self.list.set_tracks(tracks)
+        self._update_download()
         self.list.scrollToTop()
 
     def refresh(self) -> None:
         if self.album:
             self.show_album(self.album)
+
+    def _missing(self) -> list[Track]:
+        return [t for t in tracks_of(self.album) if t.source != "local" and not self.actions.local_path_of(t)] \
+            if self.album else []
+
+    def _update_download(self) -> None:
+        """“Download” while something is left to download; “Downloaded” (inactive) once it's all here."""
+        missing = self._missing()
+        self.download_btn.setEnabled(bool(missing))
+        self.download_btn.setText("Download" if missing else "Downloaded")
+
+    def _download_all(self) -> None:
+        missing = self._missing()
+        if missing:
+            self.actions.download(missing)
+            self.list.viewport().update()
 
     def _play_from(self, row: int) -> None:
         """Albums play as albums: in order, gapless, nothing slipped in between."""
@@ -516,7 +534,8 @@ class AddDialog(QDialog):
         col.setContentsMargins(22, 20, 22, 18)
         col.setSpacing(14)
         col.addWidget(label("Add to Shelf", "Title2"))
-        self.mode = Segmented(["Find Online", "My Playlists"])
+        self.mode = Segmented(["Find Online", "Spotify Artist", "My Playlists"])
+        self._infos: dict[str, dict] = {}            # url → what was already loaded for it
         self.mode.changed.connect(self._switch)
         col.addWidget(self.mode)
         self.field = QLineEdit()
@@ -543,10 +562,15 @@ class AddDialog(QDialog):
         self.field.setFocus()
 
     def _switch(self, i: int) -> None:
-        self.stack.setCurrentIndex(i)
-        self.field.setVisible(i == 0)
+        self.stack.setCurrentIndex(1 if i == 2 else 0)
+        self.field.setVisible(i < 2)
+        self.field.setPlaceholderText("Artist name, or a Spotify artist link" if i == 1
+                                      else "Album or playlist name, or a link")
         self.status.setText("")
-        if i == 1:
+        if i < 2 and self.field.text().strip():
+            self.results.set_tracks([])
+            self.run()
+        if i == 2:
             self.mine.set_tracks([Track(source="aria", id=p.id, title=p.name,
                                         artist=f"{len(p.tracks)} songs",
                                         thumbnail=next((t.thumbnail for t in p.tracks if t.thumbnail), ""))
@@ -568,6 +592,9 @@ class AddDialog(QDialog):
             return
         ticket = self._latest.next()
         self.status.setText("Searching…")
+        if self.mode.index() == 1:
+            self._find_artist(q, ticket)
+            return
 
         def done(found):
             if self._latest.is_current(ticket):
@@ -579,21 +606,43 @@ class AddDialog(QDialog):
         tasks.run(lambda: providers.search_albums(q, 15), done,
                   lambda e: self.status.setText("Couldn’t connect"))
 
+    def _find_artist(self, q: str, ticket) -> None:
+        """Spotify: the artist's top tracks and public playlists of their songs."""
+        def done(found: list[dict]):
+            if not self._latest.is_current(ticket):
+                return
+            self.status.setText(f"{len(found)} found" if found else "Nothing found on Spotify")
+            self._infos.update({a["url"]: a for a in found})
+            self.results.set_tracks([Track(source=a["source"], id=a["url"], title=a["title"],
+                                           artist=f"{'Artist' if '/artist/' in a['url'] else 'Playlist'} · "
+                                                  f"{len(a['tracks'])} songs",
+                                           url=a["url"], thumbnail=a["cover"]) for a in found])
+
+        tasks.run(lambda: providers.spotify.search_artist(q), done,
+                  lambda e: self.status.setText("Couldn’t connect"))
+
     def _add_row(self, row: int) -> None:
         t = self.results.tracks()[row]
         if not self.shelf.has(t.url):
-            self._add_url(t.url)
+            info = self._infos.get(t.url)
+            if info:
+                self._put(info)
+            else:
+                self._add_url(t.url)
+
+    def _put(self, info: dict) -> None:
+        album = Album(**{k: info[k] for k in ("title", "artist", "cover", "url", "source", "year")},
+                      tracks=info["tracks"], kind=info.get("kind", "album"))
+        added = self.shelf.add(album)
+        self.status.setText("")
+        self.results.viewport().update()
+        self.toast("success" if added else "info", f"Added “{info['title']}”" if added else "Already on the shelf")
 
     def _add_url(self, url: str) -> None:
         self.status.setText("Loading…")
 
         def done(info: dict):
-            album = Album(**{k: info[k] for k in ("title", "artist", "cover", "url", "source", "year")},
-                          tracks=info["tracks"], kind=info.get("kind", "album"))
-            added = self.shelf.add(album)
-            self.status.setText("")
-            self.results.viewport().update()
-            self.toast("success" if added else "info", f"Added “{info['title']}”" if added else "Already on the shelf")
+            self._put(info)
 
         def failed(exc):
             log.error("Couldn't load album: %s", exc)
@@ -621,12 +670,7 @@ class ShelfPage(TintedPage):
         self.header.addWidget(self.display)
 
         self.stack = QStackedWidget()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        reserve_scrollbar(scroll)
+        scroll = plain_scroll()
         self.view = ShelfView(shelf)
         scroll.setWidget(self.view)
         self.detail = AlbumView(shelf, actions)
@@ -640,6 +684,8 @@ class ShelfPage(TintedPage):
         self.spines.clicked_item.connect(lambda i: self.open_album(self.shelf.albums[i].id))
         self.spines.activated.connect(lambda i: self.open_album(self.shelf.albums[i].id))
         self.spines.context.connect(lambda i, pos: self._menu(self.shelf.albums[i].id, pos))
+        self.spines.reorderable = True
+        self.spines.moved.connect(self.shelf.move)
         thumbs_mod.instance().ready.connect(lambda _k: self.spines.isVisible() and self.spines.refresh_covers())
         self._view = 2 if settings["shelf_view"] == "spine" else 0
         self.display.set_index(1 if self._view == 2 else 0)

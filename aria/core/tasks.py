@@ -104,6 +104,9 @@ class Latest:
     def is_current(self, ticket: int) -> bool:
         return ticket == self._n
 
+    def current(self) -> int:
+        return self._n
+
 
 def shutdown(timeout_ms: int = 1500) -> None:
     for pool in (_pool, _image_pool):

@@ -7,13 +7,13 @@ from __future__ import annotations
 import random
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QStackedWidget
+from PySide6.QtWidgets import QMenu, QStackedWidget
 
 from aria.core import smart
 from aria.core.models import format_duration
 from aria.ui.pages.base import Page
 from aria.ui.widgets import thumbs as thumbs_mod
-from aria.ui.widgets.controls import Button, IconButton, label
+from aria.ui.widgets.controls import Button, IconButton, add_item, label, menu_below
 from aria.ui.widgets.rack import RackPanel, RackView, track_items
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.dialogs import confirm, prompt
@@ -33,27 +33,20 @@ class PlaylistPage(Page):
         self.pid: str | None = None
         self.smart_id: str | None = None
 
-        self.rules_btn = Button("Edit Rules…", "borderless", icon="smart")
-        self.rename_btn = Button("Rename…", "borderless", icon="pencil")
-        self.delete_btn = Button("Delete…", "danger", icon="trash")
-        self.header.addWidget(self.rules_btn)
-        self.header.addWidget(self.rename_btn)
-        self.header.addWidget(self.delete_btn)
-        self.rules_btn.clicked.connect(self.edit_rules)
-        self.rename_btn.clicked.connect(self.rename)
-        self.delete_btn.clicked.connect(self.delete)
 
         bar = self.toolbar()
         self.play_btn = Button("Play", "primary", icon="play")
         self.shuffle_btn = Button("Shuffle", icon="shuffle")
-        self.queue_btn = Button("Add to Queue", icon="queue-add")
+        self.more_btn = IconButton("more", "More", tone="secondary")
+        self.more_btn.clicked.connect(self._more)
         self.count = label("", "Caption")
-        for w in (self.play_btn, self.shuffle_btn, self.queue_btn):
+        for w in (self.play_btn, self.shuffle_btn):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.count)
         self.view_toggle = Segmented(["List", "Disc Rack"], compact=True)
         bar.addWidget(self.view_toggle)
+        bar.addWidget(self.more_btn)
 
         self.list = TrackListView("list", "This playlist is empty", "Right-click any song › Add to Playlist.", reorderable=True)
         self._own_actions = [RowAction("close", "Remove from Playlist (Delete)", lambda r: self._remove([r]))]
@@ -63,18 +56,20 @@ class PlaylistPage(Page):
             RowAction("heart", "Save", lambda r: actions.toggle_saved(self.list.tracks()[r]), saved),
         ]
         self.list.actions = self._own_actions
-        self.list.activated_row.connect(lambda r: actions.play_playlist(self.list.tracks()[r:]))
+        # one song chosen = that song only (the Play button plays the whole list)
+        self.list.activated_row.connect(lambda r: actions.play(self.list.tracks()[r:r + 1]))
         self.list.delete_pressed.connect(lambda rows: self.smart_id is None and self._remove(rows))
         self.list.moved.connect(lambda s, d: self.pid and playlists.move(self.pid, s, d))
         self.list.context_requested.connect(self._menu)
 
         self.rack = RackView()
         self.rack_panel = RackPanel(self.rack, ("list", "Nothing here yet", ""))
-        self.rack.activated.connect(lambda i: actions.play_playlist(self.list.tracks()[i:]))
+        self.rack.activated.connect(lambda i: actions.play(self.list.tracks()[i:i + 1]))
         self.rack.context.connect(lambda i, pos: self._menu([i], pos))
         self.rack.selection_changed.connect(self._rack_selected)
+        self.rack.moved.connect(lambda s, d: self.pid and playlists.move(self.pid, s, d))
         strip = self.rack_panel.detail
-        for icon, tip, fn in (("play", "Play from Here", lambda: self._rack_do(lambda ts, i: actions.play_playlist(ts[i:]))),
+        for icon, tip, fn in (("play", "Play", lambda: self._rack_do(lambda ts, i: actions.play([ts[i]]))),
                               ("queue-add", "Add to Queue", lambda: self._rack_do(lambda ts, i: actions.enqueue([ts[i]])))):
             b = IconButton(icon, tip, tone="secondary")
             b.clicked.connect(fn)
@@ -91,7 +86,6 @@ class PlaylistPage(Page):
 
         self.play_btn.clicked.connect(lambda: actions.play_playlist(self.list.selected_tracks() or self.list.tracks()))
         self.shuffle_btn.clicked.connect(self._shuffle)
-        self.queue_btn.clicked.connect(lambda: actions.enqueue(self.list.selected_tracks() or self.list.tracks()))
         playlists.playlist_changed.connect(lambda pid: pid in (self.pid, self.smart_id) and self.refresh())
         playlists.changed.connect(self.refresh)
 
@@ -111,7 +105,7 @@ class PlaylistPage(Page):
 
     def show_playlist(self, pid: str) -> None:
         self.pid, self.smart_id = pid, None
-        self.list.reorderable = True
+        self.list.reorderable = self.rack.reorderable = True
         self.list.actions = self._own_actions
         self.list.empty = ("list", "This playlist is empty", "Right-click any song › Add to Playlist.")
         self.refresh()
@@ -120,7 +114,7 @@ class PlaylistPage(Page):
 
     def show_smart(self, sid: str) -> None:
         self.pid, self.smart_id = None, sid
-        self.list.reorderable = False
+        self.list.reorderable = self.rack.reorderable = False
         self.list.actions = self._smart_actions
         self.list.empty = ("smart", "Nothing matches yet", "Songs appear here as they fit the rules.")
         self.refresh()
@@ -152,13 +146,23 @@ class PlaylistPage(Page):
             total = sum(t.duration for t in tracks)
             self.count.setText(f"{len(tracks):,} song{'s' if len(tracks) != 1 else ''} · {format_duration(total)}"
                                if tracks else "")
-        self.rules_btn.setVisible(self.smart_id is not None)
-        self.rename_btn.setVisible(self.smart_id is None)
         self.list.set_tracks(tracks)
         if self.stack.currentIndex() == 1:
             self._sync_rack()
-        for b in (self.play_btn, self.shuffle_btn, self.queue_btn):
+        for b in (self.play_btn, self.shuffle_btn):
             b.setEnabled(bool(tracks))
+
+    def _more(self) -> None:
+        m = QMenu(self)
+        tracks = self.list.selected_tracks() or self.list.tracks()
+        add_item(m, "queue-add", "Add to Queue", lambda: self.actions.enqueue(tracks), bool(tracks))
+        m.addSeparator()
+        if self.smart_id is not None:
+            add_item(m, "smart", "Edit Rules…", self.edit_rules)
+        else:
+            add_item(m, "pencil", "Rename…", self.rename)
+        add_item(m, "trash", "Delete…", self.delete)
+        menu_below(self.more_btn, m)
 
     def set_playing(self, key) -> None:
         self.list.set_playing(key)

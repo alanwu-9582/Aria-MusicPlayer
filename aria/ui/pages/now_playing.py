@@ -9,9 +9,12 @@ New tools live inside these tabs rather than on pages of their own:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtWidgets import QMenu, QSplitter, QStackedWidget, QVBoxLayout, QWidget
+import logging
 
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QLineEdit, QMenu, QSplitter, QStackedWidget, QVBoxLayout, QWidget
+
+from aria.core import identity
 from aria.core import lyrics as lyrics_mod
 from aria.core import tasks, timefit
 from aria.core.models import format_duration
@@ -21,7 +24,7 @@ from aria.ui.pages.base import TintedPage
 from aria.ui.player_bar import ElidedLabel
 from aria.ui.theme import theme
 from aria.ui.widgets.artwork import Artwork
-from aria.ui.widgets.controls import Button, IconButton, hbox, label
+from aria.ui.widgets.controls import Button, IconButton, add_item, hbox, label, menu_below
 from aria.ui.widgets.dialogs import confirm, prompt
 from aria.ui.widgets.lyrics_view import LyricsView
 from aria.ui.widgets.segmented import Segmented
@@ -29,9 +32,12 @@ from aria.ui.widgets.sessions import SessionListView, span
 from aria.ui.widgets.slider import Slider
 from aria.ui.widgets.tracklist import RowAction, TrackListView
 
+lyr_log = logging.getLogger("lyrics")
+
 PANEL_MIN = 380
 QUEUE, FOR_YOU, HISTORY, LYRICS = range(4)
 TIMER_PRESETS = (25, 45, 60)
+MAX_OFFSET = 999.0                 # seconds the lyrics can be shifted either way
 
 
 class NowPlayingPage(TintedPage):
@@ -59,7 +65,7 @@ class NowPlayingPage(TintedPage):
         lv.addWidget(self.art, 1)
         self.song = ElidedLabel("Title2")
         self.artist = ElidedLabel("Secondary")
-        self.open_btn = Button("Open Source", "borderless", icon="external")
+        self.open_btn = IconButton("external", "Open Source", tone="secondary")
         self.open_btn.clicked.connect(lambda: self.pb.current and self.actions.open_source(self.pb.current))
         info = QVBoxLayout()
         info.setSpacing(2)
@@ -88,11 +94,8 @@ class NowPlayingPage(TintedPage):
         self.mode_end_btn = IconButton("close", "", size=22, icon_size=13, tone="secondary")
         self.hist_mode = Segmented(["Songs", "Sessions"], compact=True)
         self.back_btn = IconButton("arrow-left", "All Sessions", tone="secondary")
-        self.timer_btn = IconButton("timer", "Listen for a Set Time", tone="secondary")
-        self.tempo_btn = IconButton("waveform", "Arrange by Tempo", tone="secondary")
         self.undo_btn = IconButton("undo", "Undo Arrange", tone="secondary")
         self.shuffle_btn = IconButton("shuffle", "Shuffle Queue", tone="secondary")
-        self.clear_btn = IconButton("trash", "Clear Queue", tone="secondary")
         self.familiar_btn = IconButton("heart", "Familiar", size=24, icon_size=14, tone="secondary", tip=True)
         self.dial = Slider(100, 50, step=10, name="Discovery")
         self.dial.setFixedWidth(96)
@@ -100,15 +103,25 @@ class NowPlayingPage(TintedPage):
         self.dial.set_value(float(settings["discovery"]) * 100)
         self.unexpected_btn = IconButton("compass", "Unexpected", size=24, icon_size=14, tone="secondary")
         self.refresh_btn = IconButton("refresh", "Refresh Recommendations", tone="secondary")
-        self.add_recs_btn = IconButton("queue-add", "Add All to Queue", tone="secondary")
-        self.clear_hist_btn = IconButton("trash", "Clear History", tone="secondary")
         self.play_session_btn = IconButton("play", "Play This Session", tone="secondary")
         self.save_session_btn = IconButton("list", "Save as Playlist", tone="secondary")
-        self.lyrics_btn = IconButton("refresh", "Search Lyrics Again", tone="secondary")
+        self.earlier_btn = IconButton("minus", "Lyrics Earlier (0.5 s)", tone="secondary")
+        self.offset_edit = QLineEdit()                 # the timing shift, typed in seconds (any amount)
+        self.offset_edit.setFixedWidth(74)
+        self.offset_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.offset_edit.setToolTip("Lyrics timing in seconds: type an amount, Enter to apply")
+        self.offset_edit.setFrame(False)               # just the number: no box around it
+        self.offset_edit.setObjectName("PlainField")
+        self.offset_edit.setStyleSheet("QLineEdit#PlainField { border: none; background: transparent; padding: 0; }")
+        self.later_btn = IconButton("plus", "Lyrics Later (0.5 s)", tone="secondary")
+        self.more_btn = IconButton("more", "More", tone="secondary")
+        self.plain_btn = Button("Use Plain", "borderless")
+        self.align_btn = IconButton("waveform", "Align Again", tone="secondary")
         rv.addLayout(hbox(self.hist_mode, self.back_btn, self.count, self.mode_end_btn, None,
                           self.familiar_btn, self.dial, self.unexpected_btn, 6,
-                          self.timer_btn, self.undo_btn, self.tempo_btn, self.shuffle_btn, self.clear_btn, self.refresh_btn, self.add_recs_btn,
-                          self.clear_hist_btn, self.play_session_btn, self.save_session_btn, self.lyrics_btn,
+                          self.undo_btn, self.shuffle_btn, self.refresh_btn,
+                          self.play_session_btn, self.save_session_btn,
+                          self.plain_btn, self.align_btn, self.earlier_btn, self.offset_edit, self.later_btn, self.more_btn,
                           spacing=4))
 
         self.stack = QStackedWidget()
@@ -130,6 +143,13 @@ class NowPlayingPage(TintedPage):
         split.setSizes([760, 420])
 
         self._lyrics_for: str | None = None
+        self.lyric_prefs = lyrics_mod.prefs()
+        self._plain_lyrics: lyrics_mod.Lyrics | None = None       # what an alignment was made from
+        self._aligning: str | None = None                         # song being aligned right now
+        self._align_note = "Aligning…"
+        self._temp_audio: dict[str, str] = {}                     # throwaway copies made to align streamed songs → song
+        self._temp_busy: str | None = None                        # the one being aligned right now
+        self._clear_temp_audio(everything=True)                   # left over from last time
         self._lyrics_ticket = tasks.Latest()
         self._lyrics_timer = QTimer(self)
         self._lyrics_timer.setSingleShot(True)
@@ -152,22 +172,22 @@ class NowPlayingPage(TintedPage):
         pb, a = self.pb, self.actions
         self.tabs.changed.connect(self._show_tab)
         self.shuffle_btn.clicked.connect(pb.shuffle)
-        self.tempo_btn.clicked.connect(self._arrange_by_tempo)
         self.undo_btn.clicked.connect(pb.undo_arrange)
-        self.clear_btn.clicked.connect(pb.clear)
-        self.timer_btn.clicked.connect(self._timer_menu)
         self.mode_end_btn.clicked.connect(self._end_mode)
         self.refresh_btn.clicked.connect(lambda: pb.refresh_recommendations(force=True))
-        self.add_recs_btn.clicked.connect(self._add_all_recs)
         self.dial.committed.connect(lambda v: pb.set_discovery(v / 100))
         self.familiar_btn.clicked.connect(lambda: self._set_dial(0))
         self.unexpected_btn.clicked.connect(lambda: self._set_dial(100))
-        self.clear_hist_btn.clicked.connect(pb.clear_history)
         self.hist_mode.changed.connect(self._show_history_mode)
         self.back_btn.clicked.connect(lambda: self._show_history_mode(1))
         self.play_session_btn.clicked.connect(lambda: self._play_session(self._session_id))
         self.save_session_btn.clicked.connect(lambda: self._save_session(self._session_id))
-        self.lyrics_btn.clicked.connect(lambda: self._load_lyrics(force=True))
+        self.earlier_btn.clicked.connect(lambda: self._nudge_offset(-0.5))
+        self.later_btn.clicked.connect(lambda: self._nudge_offset(0.5))
+        self.offset_edit.editingFinished.connect(self._typed_offset)
+        self.more_btn.clicked.connect(self._more)
+        self.plain_btn.clicked.connect(self._use_plain)
+        self.align_btn.clicked.connect(self._align_again)
         self.lyrics.seek.connect(pb.seek)
         pb.position_changed.connect(lambda pos, _l: self.lyrics.set_position(pos))
 
@@ -229,8 +249,31 @@ class NowPlayingPage(TintedPage):
         elif self.pb.album is not None:
             self.pb.end_album()
 
-    def _timer_menu(self) -> None:
-        m = QMenu(self)
+    def _more(self) -> None:
+        """The tab's less-used actions."""
+        pb, m = self.pb, QMenu(self)
+        tab = self.tabs.index()
+        if tab == QUEUE:
+            self._fill_timer_menu(m.addMenu(icons.icon("timer", theme.color("label"), 16), "Listen for a Set Time"))
+            add_item(m, "waveform", "Arrange by Tempo", self._arrange_by_tempo, len(pb.queue) > 1 and pb.tempo is not None)
+            m.addSeparator()
+            add_item(m, "trash", "Clear Queue", pb.clear, bool(pb.queue))
+        elif tab == FOR_YOU:
+            add_item(m, "queue-add", "Add All to Queue", self._add_all_recs, bool(pb.recommendations))
+        elif tab == HISTORY:
+            add_item(m, "trash", "Clear History", pb.clear_history, bool(pb.history))
+        else:
+            add_item(m, "refresh", "Search Lyrics Again", lambda: self._load_lyrics(force=True),
+                     pb.current is not None and self.lyrics.state != "loading")
+            lyr = self.lyrics.lyrics
+            add_item(m, "undo", "Reset Timing", lambda: self._nudge_offset(None), bool(lyr and lyr.offset))
+            m.addSeparator()
+            add_item(m, "list", "Choose Lyrics…", self._choose_lyrics, pb.current is not None)
+            add_item(m, "pencil", "Edit Song Info…", lambda: self.actions.edit_info and self.actions.edit_info(pb.current),
+                     pb.current is not None)
+        menu_below(self.more_btn, m)
+
+    def _fill_timer_menu(self, m: QMenu) -> None:
         c = theme.color("label")
         for minutes in TIMER_PRESETS:
             m.addAction(icons.icon("timer", c, 16), f"{minutes} min", lambda s=minutes * 60: self.start_timer(s))
@@ -244,7 +287,6 @@ class NowPlayingPage(TintedPage):
         if self.pb.timer is not None:
             m.addSeparator()
             m.addAction(icons.icon("close", c, 16), "Stop Timer", self.pb.cancel_timer)
-        m.exec(self.timer_btn.mapToGlobal(QPoint(0, self.timer_btn.height() + 4)))
 
     def _custom_timer(self) -> None:
         text = prompt(self, "Listen For", "Minutes, or minutes:seconds (31:25)", "Start")
@@ -389,7 +431,9 @@ class NowPlayingPage(TintedPage):
         end_tip = ""
         if tab == LYRICS:
             lyr = self.lyrics.lyrics
-            text = f"{lyr.source} · {'Synced' if lyr.synced else 'Plain'}" if lyr else ""
+            text = lyr.label if lyr else ""
+            if lyr is not None and not lyr.synced and self.pb.current and self._aligning == self.pb.current.key:
+                text += f" · {self._align_note}"
         elif tab == QUEUE and pb.measuring[1]:
             done, total = pb.measuring
             text = f"Measuring tempo · {done} / {total}"
@@ -412,26 +456,30 @@ class NowPlayingPage(TintedPage):
         self.mode_end_btn.set_tip(end_tip)
 
         shown = {
-            self.timer_btn: tab == QUEUE, self.shuffle_btn: tab == QUEUE, self.clear_btn: tab == QUEUE,
-            self.tempo_btn: tab == QUEUE, self.undo_btn: tab == QUEUE and pb.can_undo_arrange,
+            self.shuffle_btn: tab == QUEUE, self.undo_btn: tab == QUEUE and pb.can_undo_arrange,
             self.familiar_btn: tab == FOR_YOU, self.dial: tab == FOR_YOU, self.unexpected_btn: tab == FOR_YOU,
-            self.refresh_btn: tab == FOR_YOU, self.add_recs_btn: tab == FOR_YOU,
+            self.refresh_btn: tab == FOR_YOU,
             self.hist_mode: tab == HISTORY and hist_page != 2, self.back_btn: tab == HISTORY and hist_page == 2,
-            self.clear_hist_btn: tab == HISTORY and hist_page == 0,
             self.play_session_btn: tab == HISTORY and hist_page == 2,
             self.save_session_btn: tab == HISTORY and hist_page == 2,
-            self.lyrics_btn: tab == LYRICS,
+            self.more_btn: not (tab == HISTORY and hist_page != 0),
         }
+        lyr = self.lyrics.lyrics if self.lyrics.state == "ready" else None
+        timed = tab == LYRICS and lyr is not None and lyr.synced
+        shown.update({self.earlier_btn: timed, self.later_btn: timed, self.offset_edit: timed,
+                      self.plain_btn: timed and lyr.sync == lyrics_mod.ALIGNED})
+        alignable = tab == LYRICS and lyr is not None and (lyr.sync == lyrics_mod.ALIGNED or not lyr.synced) \
+            and self._plain_lyrics is not None and self._can_align(self.pb.current)
+        shown[self.align_btn] = alignable
+        self.align_btn.set_tip("Align Again" if lyr is not None and lyr.synced else "Align")
+        self.align_btn.setEnabled(self._aligning is None)
+        if lyr is not None and not self.offset_edit.hasFocus():
+            self.offset_edit.setText(f"{lyr.offset:+.1f} s")      # shown even at +0.0 s
         for w, on in shown.items():
             w.setVisible(on)
-        self.timer_btn.setChecked(pb.timer is not None)
         self.shuffle_btn.setEnabled(len(pb.queue) > 1)
-        self.tempo_btn.setEnabled(len(pb.queue) > 1 and pb.tempo is not None)
-        self.clear_btn.setEnabled(bool(pb.queue))
         self.refresh_btn.setEnabled(not busy and (pb.current is not None or bool(pb.history)))
-        self.add_recs_btn.setEnabled(bool(pb.recommendations))
-        self.clear_hist_btn.setEnabled(bool(pb.history))
-        self.lyrics_btn.setEnabled(pb.current is not None and self.lyrics.state != "loading")
+
 
     # ---- lyrics --------------------------------------------------------------
 
@@ -450,10 +498,15 @@ class NowPlayingPage(TintedPage):
         enhanced = bool(self.settings["lyrics_enhanced"])
 
         def done(found):
+            lyr_log.info("Lyrics · “%s” · %s", t.title, found.label if found is not None else "none found")
             if self._lyrics_ticket.is_current(ticket):
+                if found is not None:
+                    found.offset = self.lyric_prefs.offset(t.key)
                 self.lyrics.set_state("ready" if found else "none", found)
                 self.lyrics.set_position(self.pb.player.position())
                 self._update_toolbar()
+                if found is not None and not found.synced:
+                    self._maybe_align(t, found, ticket)
 
         def failed(_e):
             if self._lyrics_ticket.is_current(ticket):
@@ -461,6 +514,186 @@ class NowPlayingPage(TintedPage):
                 self._update_toolbar()
 
         tasks.run(lambda: lyrics_mod.fetch(t, enhanced, self.pb.recommender, force=force), done, failed)
+
+    def _choose_lyrics(self) -> None:
+        t = self.pb.current
+        if t is None:
+            return
+        from aria.ui.widgets.song_info import choose_lyrics
+        res = choose_lyrics(self, t, bool(self.lyric_prefs.choice(t.key)))
+        if not res:
+            return
+        kind, c = res
+        lyrics_mod.choose(t, c if kind == "apply" else None)
+        self._load_lyrics(force=True)
+
+    def _nudge_offset(self, step: float | None) -> None:
+        """Shift the timing for this song (None = back to as found); remembered per song."""
+        lyr, t = self.lyrics.lyrics, self.pb.current
+        if lyr is None or t is None:
+            return
+        self._apply_offset(0.0 if step is None else lyr.offset + step)
+
+    def _typed_offset(self) -> None:
+        text = self.offset_edit.text().replace("s", "").replace("秒", "").replace(",", ".").strip()
+        try:
+            value = float(text)
+        except ValueError:
+            lyr = self.lyrics.lyrics                   # not a number: show the current shift again
+            self.offset_edit.setText(f"{lyr.offset:+.1f} s" if lyr else "")
+            return
+        self._apply_offset(value)
+
+    def _apply_offset(self, seconds: float) -> None:
+        lyr, t = self.lyrics.lyrics, self.pb.current
+        if lyr is None or t is None:
+            return
+        lyr.offset = max(-MAX_OFFSET, min(MAX_OFFSET, round(seconds, 1)))
+        self.lyric_prefs.set_offset(t.key, lyr.offset)
+        self.offset_edit.setText(f"{lyr.offset:+.1f} s")
+        self.lyrics.set_position(self.pb.player.position())
+        self.lyrics.changed.emit()                      # Immersive Mode shows the same lyrics
+        self._update_toolbar()
+
+    def _can_align(self, t) -> bool:
+        """Forced Alignment is on and ready, and this song is on disk (or streamed songs may be
+        downloaded for it)."""
+        import os
+        from aria.core import aligner
+        if t is None or not self.settings["lyrics_align"] or not aligner.installed(self.settings["align_model"]):
+            return False
+        on_disk = bool(t.local_path and os.path.exists(t.local_path))
+        return (on_disk or (bool(self.settings["align_streams"]) and t.source != "local")) and aligner.engine_available()
+
+    def _maybe_align(self, t, plain, ticket, again: bool = False) -> None:
+        """Plain lyrics: time them with the speech model (when turned on) — from the file on disk,
+        or from a temporary download of a streamed song (when that's turned on too)."""
+        import os
+        self._plain_lyrics = plain
+        if not again:
+            known = lyrics_mod.cached_alignment(t, plain)
+            if known is not None and not self.lyric_prefs.align_off(t.key) and self.settings["lyrics_align"]:
+                self._show_aligned(known, ticket)
+                return
+            if self.lyric_prefs.align_off(t.key):
+                return
+        if not self._can_align(t):
+            return
+        copy = next((p for p, k in self._temp_audio.items() if k == t.key and os.path.exists(p)), None)
+        if t.local_path and os.path.exists(t.local_path):
+            self._run_align(t, plain, ticket, t.local_path)
+        elif copy:
+            self._run_align(t, plain, ticket, copy, temp=True)      # downloaded already for this song
+        else:
+            self._align_from_download(t, plain, ticket)
+
+    def _align_again(self) -> None:
+        """Time this song's lyrics afresh (also after Use Plain)."""
+        t, plain = self.pb.current, self._plain_lyrics
+        if t is None or plain is None or self._aligning is not None:
+            return
+        self.lyric_prefs.set_align_off(t.key, False)
+        self.lyrics.set_state("ready", plain)              # the words untimed while it listens again
+        self._maybe_align(t, plain, self._lyrics_ticket.current(), again=True)
+        self._update_toolbar()
+
+    def _run_align(self, t, plain, ticket, path: str, temp: bool = False) -> None:
+        from aria.core import aligner
+        words = [s for _t, s in plain.lines]
+        from aria.core import langid
+        lang = aligner.WHISPER_LANG.get(langid.detect(" ".join(w for w in words[:24] if w)).lang)   # unknown: let it listen
+        model = self.settings["align_model"]
+        self._aligning, self._align_note = t.key, "Aligning…"
+        self._temp_busy = path if temp else None
+        self._update_toolbar()
+
+        def work():
+            # its own idle-priority process: playback and the window never wait for it
+            return aligner.worker().submit(aligner.align_file, path, words, model, lang).result(timeout=1800)
+
+        def finish(result):
+            if self._aligning == t.key:
+                self._aligning = None
+            if temp:
+                self._temp_busy = None
+                if result:
+                    result = dict(result, temp=True)          # made from a copy that's about to go
+            lyr_log.info("Aligned · “%s” · %d%% of lines", t.title, round(100 * result.get("confidence", 0)))                  if result else lyr_log.warning("Couldn’t align “%s”", t.title)
+            if result:
+                aligned = lyrics_mod.save_alignment(t, plain, result)
+                if self._lyrics_ticket.is_current(ticket):
+                    self._show_aligned(aligned, ticket)
+            self._update_toolbar()
+            self._clear_temp_audio()
+
+        tasks.run(work, finish, lambda e: finish(None))
+
+    def _align_from_download(self, t, plain, ticket) -> None:
+        """A streamed song: download a temporary copy while it plays, align that, and delete the
+        copy once the song is over."""
+        from aria import paths, providers
+        self._aligning, self._align_note = t.key, "Downloading to align…"
+        self._update_toolbar()
+        folder = paths.CACHE_DIR / "align_audio"
+
+        def done(path):
+            self._temp_audio[path] = t.key
+            still = self.pb.current is not None and self.pb.current.key == t.key
+            if not still:                                    # the song is over already: nothing to time now
+                if self._aligning == t.key:
+                    self._aligning = None
+                self._update_toolbar()
+                self._clear_temp_audio()
+                return
+            self._run_align(t, plain, ticket, path, temp=True)
+
+        def failed(e):
+            lyr_log.warning("Couldn’t download “%s” to align: %s", t.title, e)
+            if self._aligning == t.key:
+                self._aligning = None
+            self._update_toolbar()
+
+        lyr_log.info("Downloading “%s” to align its lyrics", t.title)
+        tasks.run(lambda: providers.download_to(t, folder), done, failed)
+
+    def _clear_temp_audio(self, everything: bool = False) -> None:
+        """Delete the temporary copies of songs that are over (the playing song keeps its copy until
+        it ends). ``everything``: the whole folder (at start)."""
+        import os
+        import shutil
+        from aria import paths
+        if everything:
+            shutil.rmtree(paths.CACHE_DIR / "align_audio", ignore_errors=True)
+            return
+        playing = self.pb.current.key if self.pb.current else None
+        for path, key in list(self._temp_audio.items()):
+            if path == self._temp_busy or key == playing:
+                continue
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                continue                                     # still open somewhere: next time
+            self._temp_audio.pop(path, None)
+
+    def _show_aligned(self, aligned, ticket) -> None:
+        t = self.pb.current
+        if not self._lyrics_ticket.is_current(ticket) or t is None:
+            return
+        aligned.offset = self.lyric_prefs.offset(t.key)
+        self.lyrics.set_state("ready", aligned)
+        self.lyrics.set_position(self.pb.player.position())
+        self._update_toolbar()
+
+    def _use_plain(self) -> None:
+        """This song's aligned timing is wrong: keep its plain lyrics from now on."""
+        t = self.pb.current
+        if t is None or self._plain_lyrics is None:
+            return
+        self.lyric_prefs.set_align_off(t.key, True)
+        self.lyrics.set_state("ready", self._plain_lyrics)
+        self._update_toolbar()
 
     # ---- updates -------------------------------------------------------------
 
@@ -470,7 +703,7 @@ class NowPlayingPage(TintedPage):
         if not t:
             self.artist.set_full_text("")
             return
-        bits = [t.artist, t.source_label]
+        bits = [identity.display(t)[1], t.source_label]
         info = self.pb.tempo.get(t) if self.pb.tempo is not None and self.settings["tempo_flow"] else None
         if info and info[1] >= 0.35:
             bits.append(f"{round(info[0])} BPM")
@@ -478,7 +711,7 @@ class NowPlayingPage(TintedPage):
 
     def _on_current(self, t) -> None:
         self.art.set_track(t)
-        self.song.set_full_text(t.title if t else "")
+        self.song.set_full_text(identity.display(t)[0] if t else "")
         self.show_bpm()
         self.open_btn.setVisible(t is not None)
         self.playlist_btn.setVisible(t is not None)
@@ -486,7 +719,10 @@ class NowPlayingPage(TintedPage):
         key = t.key if t else None
         for v in (self.queue_list, self.recs_list, self.hist_list, self.session_list):
             v.set_playing(key)
+        if self._temp_audio:
+            self._clear_temp_audio()                      # the song it was made for is over
         if key != self._lyrics_for:
+            self._plain_lyrics = None
             self.lyrics.set_state("loading" if t else "empty")
             self._lyrics_timer.start()          # wait out quick skips
         self._update_toolbar()
