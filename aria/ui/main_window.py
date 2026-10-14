@@ -472,7 +472,8 @@ class MainWindow(QMainWindow):
         if self.tray:
             self.tray.hide()
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen([sys.executable, "-m", "aria"], cwd=str(paths.ROOT), creationflags=flags, close_fds=True)
+        cmd = [sys.executable] if paths.FROZEN else [sys.executable, "-m", "aria"]
+        subprocess.Popen(cmd, cwd=str(paths.APP_DIR), creationflags=flags, close_fds=True)
         os._exit(0)                 # skip the usual save on exit: it would write the old data back
 
     def export_backup(self) -> None:

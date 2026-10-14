@@ -12,3 +12,7 @@ data/
 
 # editor
 .vscode/
+
+# packaging output
+/build/
+/dist/

@@ -14,6 +14,7 @@ import sys
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QHBoxLayout, QMenu, QVBoxLayout, QWidget
 
+from aria import paths
 from aria.core import aligner, cache, tasks
 from aria.ui import icons
 from aria.ui.theme import theme
@@ -177,7 +178,10 @@ class ModelsPanel(QWidget):
     def refresh(self) -> None:
         engine = aligner.engine_available()
         self.engine_row.setVisible(not engine)
-        if not engine and self.engine_btn.isEnabled():
+        if not engine and paths.FROZEN:                # no pip in Aria.exe: the engine comes with the build
+            self.engine_btn.hide()
+            self.engine_note.setText("This build of Aria doesn’t include the speech engine (faster-whisper).")
+        elif not engine and self.engine_btn.isEnabled():
             self.engine_note.setText("Forced Alignment needs the speech engine (faster-whisper).")
         self.picker.states = [("In Use" if m.id == self.settings["align_model"] else "Downloaded")
                               if aligner.installed(m.id) else ("Downloading" if self.manager.active == m.id else "")

@@ -40,14 +40,22 @@ Aria MusicPlayer
 
 使用說明
 ---
-執行環境：Windows 10 / 11，Python 3.10 以上（專案已附 VLC 3.0.18）。
+**安裝版**：執行 `Aria-Setup-<版本>.exe`，預設只為目前使用者安裝、不需要系統管理員權限（Windows 10 / 11，64 位元）。安裝檔已包含 Python、VLC 與語音引擎，不必另外安裝任何東西。
+
+**從原始碼執行**：Python 3.10 以上（專案已附 VLC 3.0.18）。
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
-YouTube 經常改版。若出現「無法播放」，在「主控台」輸入 `update` 更新 yt-dlp 後重新啟動即可。若電腦裝有 [Deno](https://deno.com) 或 Node.js，yt-dlp 會用它解 YouTube 的簽章，相容性更好。
+**自行打包**：需要 PyInstaller，安裝檔另需 [Inno Setup 6](https://jrsoftware.org/isdl.php)。會產生 `dist/Aria/`（含 `Aria.exe` 的執行目錄，可直接執行或整個資料夾複製帶走）與 `dist/Aria-Setup-<版本>.exe`；加上 `--no-installer` 只產生執行目錄。
+
+```bash
+python packaging/build.py
+```
+
+YouTube 經常改版。若出現「無法播放」，在「主控台」輸入 `update` 更新 yt-dlp 後重新啟動即可（安裝版也可以：新版會放在資料夾的 `packages/`，比內建的新時才使用）。若電腦裝有 [Deno](https://deno.com) 或 Node.js，yt-dlp 會用它解 YouTube 的簽章，相容性更好。
 
 ### 介面
 
@@ -131,7 +139,7 @@ YouTube 經常改版。若出現「無法播放」，在「主控台」輸入 `u
 
 ### 資料
 
-收藏、佇列、播放清單（含智慧收藏）、唱片架、聆聽階段與播放統計、設定、下載的音檔與快取都放在 `data/`。第一次啟動時會自動匯入 v1 的 `assets/saved.json` 與 `assets/queue.json`。
+收藏、佇列、播放清單（含智慧收藏）、唱片架、聆聽階段與播放統計、設定、下載的音檔與快取都放在 `data/`。安裝版（`Aria.exe`）則放在 `%LOCALAPPDATA%\Aria`，解除安裝或更新時都會保留；若 `Aria.exe` 旁邊有 `data` 資料夾，就改用那裡（可攜版）。要沿用原始碼版的資料，把 `data/` 的內容複製到上述任一處即可。第一次啟動時會自動匯入 v1 的 `assets/saved.json` 與 `assets/queue.json`。
 
 專案結構
 ---
@@ -141,6 +149,7 @@ aria/
   core/        資料模型、播放（VLC）、佇列與推薦、收藏與下載、儲存
   providers/   各平台的搜尋、連結解析、串流與下載
   ui/          PySide6 介面：主題 token、元件、頁面
+packaging/     打包：PyInstaller 設定、Inno Setup 安裝檔腳本、build.py
 tests/         標題比對、推薦過濾與排序、時長適配、智慧收藏、聆聽階段、歌單匯入的測試（pytest）
 ```
 
@@ -153,6 +162,10 @@ tests/         標題比對、推薦過濾與排序、時長適配、智慧收�
 * v1.0.0-beta (2023/11/12): 測試版
 * v1.0.1-beta (2024/01/18): Bug Fixed
     1. 修復了重新載入後須重啟才可更新音樂名稱
+* v2.33.0 (2026/10/14)
+    1. 可打包成 Windows 執行目錄（`dist/Aria/Aria.exe`）與安裝檔（`Aria-Setup-<版本>.exe`）：`python packaging/build.py`；安裝檔預設只為目前使用者安裝、不需系統管理員權限，可選擇建立桌面捷徑，安裝完可直接啟動
+    2. 安裝版的資料放在 `%LOCALAPPDATA%\Aria`（`Aria.exe` 旁有 `data` 資料夾時改用該處，作為可攜版）；解除安裝不會刪除資料
+    3. 安裝版也能在主控台用 `update` 更新 yt-dlp：從 PyPI 下載並驗證後放進 `packages/`，比內建版本新時才使用；主控台 `version` 會一併顯示正在使用的 yt-dlp 版本
 * v2.32.2 (2026/10/14)
     1. 全螢幕沉浸模式也能按 Ctrl+K 開啟快速命令，浮在沉浸畫面上；Esc 只關閉命令框；選擇會切換頁面的命令（例如 Open Settings）時自動離開沉浸模式
 * v2.32.1 (2026/10/14)

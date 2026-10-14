@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
@@ -31,7 +29,7 @@ theme [system|light|dark]
 data                 open the data folder
 cache [clear]        show the cache size, or clear it
 update               update yt-dlp (when YouTube stops playing)
-version · cls        version / clear the console"""
+version · cls        versions (Aria, yt-dlp) / clear the console"""
 
 
 class Commands:
@@ -155,21 +153,14 @@ class Commands:
         return f"Cache: {cache.human(cache.size())} — type “cache clear” to clear it"
 
     def cmd_update(self, _):
-        def work():
-            cmd = [sys.executable, "-m", "pip", "install", "-U", "yt-dlp", "yt-dlp-ejs"]
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            r = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=300)
-            if r.returncode:
-                raise RuntimeError((r.stderr or r.stdout).strip().splitlines()[-1])
-            import importlib.metadata as md
-            return md.version("yt-dlp")
-
-        tasks.run(work, lambda v: log.info("yt-dlp updated to %s — restart Aria to use it", v),
+        from aria.core.selfupdate import update_ytdlp
+        tasks.run(update_ytdlp, lambda v: log.info("yt-dlp updated to %s — restart Aria to use it", v),
                   lambda e: log.error("Update failed: %s", e))
         return "Updating…"
 
     def cmd_version(self, _):
-        return f"Aria {__version__}"
+        from yt_dlp.version import __version__ as ytdlp     # the copy actually in use (see aria.core.selfupdate)
+        return f"Aria {__version__} · yt-dlp {ytdlp}"
 
     def cmd_help(self, _):
         return HELP
