@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.actions.edit_info = self.edit_song_info
         from aria.ui.widgets.lyrics_view import LyricsView
         LyricsView.set_extras(settings["lyrics_translation"])
+        LyricsView.tap_sync = settings["lyrics_tap_sync"] in ("on", "smooth")
         self._learn_artists()
         library.changed.connect(self._learn_artists)
         from aria.core.activity import Activity
@@ -378,6 +379,9 @@ class MainWindow(QMainWindow):
         if key == "lyrics_translation":
             from aria.ui.widgets.lyrics_view import LyricsView
             LyricsView.set_extras(self.settings["lyrics_translation"])
+        if key == "lyrics_tap_sync":
+            from aria.ui.widgets.lyrics_view import LyricsView
+            LyricsView.tap_sync = value in ("on", "smooth")
         if key == "lyrics_words_all" and value:
             self.now_page.refine_words()                                 # the playing song's words now
         if key == "collage_centre" and self.immersive is not None:
@@ -605,6 +609,7 @@ class MainWindow(QMainWindow):
             self.immersive = ImmersiveView(self.playback, self.settings, self.now_page.lyrics, self.actions)
             self.immersive.closed.connect(self._immersive_closed)
             self.immersive.quick_requested.connect(self.open_quick)
+            self.immersive.lyrics.tapped.connect(self.now_page.tap_sync)
         self.now_page._load_lyrics()               # make sure lyrics are on their way
         self.immersive.enter(self.screen())
 

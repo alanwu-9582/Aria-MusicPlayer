@@ -16,9 +16,9 @@ from __future__ import annotations
 import time
 import weakref
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRect, QRectF, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, QRect, QRectF, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QTextLayout, QTextOption
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
 from aria.core.lyrics import Lyrics
 from aria.ui.theme import EMPHASIS_MS, STANDARD_MS, UI_FAMILIES, font, theme
@@ -33,7 +33,9 @@ FOLLOW_PAUSE = 4.0           # seconds the view stays where the user scrolled it
 class LyricsView(QWidget):
     seek = Signal(float)
     changed = Signal()                           # lyrics or their state changed (Immersive Mode follows)
+    tapped = Signal(int, float)                  # a line double-clicked: (line, seconds since its first click)
     show_trans = True                            # Settings › Lyrics Translation
+    tap_sync = False                             # Settings › Double-Click to Sync: a click waits for a second one
     _views: weakref.WeakSet = weakref.WeakSet()
 
     @classmethod
@@ -65,6 +67,10 @@ class LyricsView(QWidget):
         self._main_h: list[int] = []             # per line: the original's height (its translation sits below)
         self._pos = 0.0
         self.clickable = True                    # a click on a synced line jumps there
+        self._press: tuple[int, float] | None = None     # (line, when) of a click that may become a double-click
+        self._click = QTimer(self)
+        self._click.setSingleShot(True)
+        self._click.timeout.connect(self._clicked)
         self._hover = -1
         LyricsView._views.add(self)
         self._anim = QVariantAnimation(self)
@@ -341,8 +347,31 @@ class LyricsView(QWidget):
             return
         i = self._line_at(e.position().toPoint())
         if i >= 0 and self.lyrics and self.lyrics.synced and self.lyrics.lines[i][0] is not None:
-            self._user_scrolled = 0
-            self.seek.emit(max(0.0, self.lyrics.lines[i][0] + self.lyrics.offset))
+            if not LyricsView.tap_sync:
+                self._seek_to(i)
+                return
+            self._press = (i, time.monotonic())          # a jump only if no second click follows
+            self._click.start(QApplication.styleHints().mouseDoubleClickInterval())
+
+    def mouseDoubleClickEvent(self, e):
+        """With Double-Click to Sync: "this line starts now" — the page shifts the timing."""
+        press, self._press = self._press, None
+        if LyricsView.tap_sync and press is not None and e.button() == Qt.MouseButton.LeftButton \
+                and self._line_at(e.position().toPoint()) == press[0]:
+            self._click.stop()
+            self.tapped.emit(press[0], time.monotonic() - press[1])
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def _clicked(self) -> None:
+        press, self._press = self._press, None
+        if press is not None and self.lyrics and press[0] < len(self.lyrics.lines) \
+                and self.lyrics.lines[press[0]][0] is not None:
+            self._seek_to(press[0])
+
+    def _seek_to(self, i: int) -> None:
+        self._user_scrolled = 0
+        self.seek.emit(max(0.0, self.lyrics.lines[i][0] + self.lyrics.offset))
 
     # ---- painting --------------------------------------------------------------
 

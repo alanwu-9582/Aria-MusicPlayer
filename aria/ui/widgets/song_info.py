@@ -50,9 +50,8 @@ def edit_song_info(parent, track) -> bool:
     fields = {}
     for name, text, shown in (("title", "Title", detected.title), ("artist", "Artist", detected.artist),
                               ("franchise", "Series", detected.franchise), ("version", "Version", detected.version)):
-        e = QLineEdit(mine.get(name, ""))
-        e.setPlaceholderText(shown or "—")
-        fields[name] = e
+        e = QLineEdit(mine.get(name, shown or ""))         # filled in: edit what's there
+        fields[name] = (e, shown or "")
         form.addRow(label(text, "Secondary"), e)
     langs = MenuButton([n for _c, n in LANGS], next((i for i, (c, _n) in enumerate(LANGS) if c == mine.get("language")), 0))
     form.addRow(label("Language", "Secondary"), langs)
@@ -79,9 +78,11 @@ def edit_song_info(parent, track) -> bool:
         dlg.accept()
 
     def do_save():
-        values = {k: e.text() for k, e in fields.items()}
-        values["language"] = LANGS[langs.index()][0]
-        if values != {k: mine.get(k, "") for k in values}:
+        # only what differs from the detected info is kept, so the rest follows better detection later
+        values = {k: e.text().strip() for k, (e, auto) in fields.items() if e.text().strip() != auto.strip()}
+        if LANGS[langs.index()][0]:
+            values["language"] = LANGS[langs.index()][0]
+        if values != {k: v for k, v in mine.items() if v}:
             identity.overrides().set(track.key, values)
             result["changed"] = True
         dlg.accept()

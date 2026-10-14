@@ -22,6 +22,7 @@ CONSOLE_CLEAR = [200, 500, 1000, 0]      # messages; 0 = never
 
 CROSSFADE_SECS = [3, 6, 9, 12]
 APPEARANCES = ["system", "light", "dark"]
+TAP_SYNC = ["off", "on", "smooth"]                 # Double-Click to Sync
 SNAPSHOT_EVERY = ["off", "daily", "weekly"]
 
 
@@ -246,6 +247,14 @@ class SettingsPage(Page):
                                       "Line-synced lyrics too: the song is analysed (a streamed one through a "
                                       "temporary copy) so every word is filled as it's sung")
         lyr.pair(self.lyrics_trans, self.words_all)
+        self.tap_sync = Segmented(["Off", "On", "Smoothed"], compact=True)
+        self.tap_sync.setToolTip("Double-click a line as it starts and the timing shifts to match. "
+                                 "Smoothed: from the second time on, half the average of the earlier ones "
+                                 "and half the latest")
+        mode = settings["lyrics_tap_sync"]
+        self.tap_sync.set_index(TAP_SYNC.index(mode) if mode in TAP_SYNC else 0)
+        self.tap_sync.changed.connect(lambda i: self._set("lyrics_tap_sync", TAP_SYNC[i]))
+        lyr.field("Double-Click to Sync", self.tap_sync)
         from aria.ui.widgets.dialogs import confirm
         from aria.ui.widgets.models_panel import ModelsPanel
         self.models = ModelsPanel(settings, window.models, confirm, window.toast, self._sync_align)

@@ -205,6 +205,7 @@ class NowPlayingPage(TintedPage):
         self.plain_btn.clicked.connect(self._use_plain)
         self.align_btn.clicked.connect(self._align_again)
         self.lyrics.seek.connect(pb.seek)
+        self.lyrics.tapped.connect(self.tap_sync)
         pb.position_changed.connect(lambda pos, _l: self.lyrics.set_position(pos))
 
         saved = lambda t: t.key in self.library  # noqa: E731
@@ -617,7 +618,23 @@ class NowPlayingPage(TintedPage):
         lyr, t = self.lyrics.lyrics, self.pb.current
         if lyr is None or t is None:
             return
+        if step is None:
+            self.lyric_prefs.clear_taps(t.key)          # a fresh start for Double-Click to Sync too
         self._apply_offset(0.0 if step is None else lyr.offset + step)
+
+    def tap_sync(self, line: int, ago: float) -> None:
+        """A line double-clicked as it starts (``ago`` s since the first click): shift the timing
+        so it starts then — from that click alone, or smoothed with the earlier ones (Settings)."""
+        mode, lyr, t = self.settings["lyrics_tap_sync"], self.lyrics.lyrics, self.pb.current
+        if mode not in ("on", "smooth") or lyr is None or t is None or not lyr.synced or line >= len(lyr.lines):
+            return
+        start = lyr.lines[line][0]
+        if start is None:
+            return
+        measured = max(0.0, self.pb.player.position() - ago) - start
+        before = self.lyric_prefs.taps(t.key)
+        self.lyric_prefs.add_tap(t.key, measured)
+        self._apply_offset(lyrics_mod.tap_offset(mode, before, measured))
 
     def _typed_offset(self) -> None:
         text = self.offset_edit.text().replace("s", "").replace("秒", "").replace(",", ".").strip()

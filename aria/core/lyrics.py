@@ -902,6 +902,18 @@ def find(track: Track, enhanced: bool, recommender=None, prefer_words: bool = Fa
 
 # ---- the listener's per-song choices -------------------------------------------------
 
+MAX_TAPS = 20                       # double-click measurements kept per song
+
+
+def tap_offset(mode: str, before: list[float], measured: float) -> float:
+    """The timing shift after a double-click measured ``measured`` (s). "on": that measurement
+    alone; "smooth": from the second one on, half the average of the earlier ones and half the
+    latest, so one hasty click can't throw the timing far off."""
+    if mode == "smooth" and before:
+        return 0.5 * sum(before) / len(before) + 0.5 * measured
+    return measured
+
+
 class Prefs:
     """Sync offset and "no alignment" per song, kept with the user's data (not the cache)."""
 
@@ -917,6 +929,16 @@ class Prefs:
 
     def set_offset(self, key: str, seconds: float) -> None:
         self._set(key, "offset", round(seconds, 1) or None)
+
+    def taps(self, key: str) -> list[float]:
+        """The shifts measured by double-clicking lines of this song, oldest first."""
+        return [float(x) for x in self.data.get(key, {}).get("taps", [])]
+
+    def add_tap(self, key: str, seconds: float) -> None:
+        self._set(key, "taps", (self.taps(key) + [round(seconds, 2)])[-MAX_TAPS:])
+
+    def clear_taps(self, key: str) -> None:
+        self._set(key, "taps", None)
 
     def align_off(self, key: str) -> bool:
         return bool(self.data.get(key, {}).get("no_align"))

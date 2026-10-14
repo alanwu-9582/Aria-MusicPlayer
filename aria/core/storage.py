@@ -77,6 +77,7 @@ class Settings:
         "lyrics_enhanced": False,   # also look for lyrics in descriptions / comments
         "lyrics_translation": True, # show translation rows under lyric lines (when the lyrics have them)
         "lyrics_words_all": False,  # Word-by-Word Everything: line-synced lyrics get estimated word times too
+        "lyrics_tap_sync": "off",   # double-click a line as it starts to shift the timing: off | on | smooth
         "lyrics_align": False,      # Forced Alignment: time plain lyrics of downloaded songs with a speech model
         "align_model": "",          # which downloaded model (data/models/<id>)
         "align_streams": False,     # streamed songs with plain lyrics: download a temporary copy to align
