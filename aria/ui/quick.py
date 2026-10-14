@@ -226,8 +226,12 @@ class QuickActions(QWidget):
 
     # ---- show / hide -------------------------------------------------------------
 
-    def open(self) -> None:
-        self.setGeometry(self.parentWidget().rect())
+    def open(self, host: QWidget | None = None) -> None:
+        """Over the main window, or over ``host`` (Immersive Mode, a window of its own)."""
+        host = host or self.w.centralWidget()
+        if self.parentWidget() is not host:
+            self.setParent(host)
+        self.setGeometry(host.rect())
         self.field.clear()
         self._online, self._online_for = [], ""
         self._rebuild()
@@ -238,7 +242,12 @@ class QuickActions(QWidget):
     def close_palette(self) -> None:
         self._latest.next()
         self._search.stop()
+        host = self.parentWidget()
         self.hide()
+        if host is not self.w.centralWidget():
+            self.setParent(self.w.centralWidget())         # back home (it was over Immersive Mode)
+            if host is not None and host.isVisible():
+                host.setFocus()
 
     def _restyle(self) -> None:
         t = theme

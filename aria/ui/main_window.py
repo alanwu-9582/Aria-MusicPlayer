@@ -289,6 +289,8 @@ class MainWindow(QMainWindow):
     # ---- navigation ----------------------------------------------------------
 
     def go(self, index: int) -> None:
+        if self.immersive is not None and self.immersive.isVisible():
+            self.immersive.close()                     # going to a page (e.g. from Ctrl+K) leaves Immersive Mode
         index = max(0, min(PAGE_COUNT - 1, index))
         page = self.page(index)
         self.pages.setCurrentWidget(page)
@@ -601,6 +603,7 @@ class MainWindow(QMainWindow):
             from aria.ui.immersive import ImmersiveView
             self.immersive = ImmersiveView(self.playback, self.settings, self.now_page.lyrics, self.actions)
             self.immersive.closed.connect(self._immersive_closed)
+            self.immersive.quick_requested.connect(self.open_quick)
         self.now_page._load_lyrics()               # make sure lyrics are on their way
         self.immersive.enter(self.screen())
 
@@ -612,10 +615,12 @@ class MainWindow(QMainWindow):
     # ---- quick actions -------------------------------------------------------
 
     def open_quick(self) -> None:
+        """Ctrl+K — over Immersive Mode too, when that's what's showing."""
         if self.quick.isVisible():
             self.quick.close_palette()
-        else:
-            self.quick.open()
+            return
+        imm = self.immersive if self.immersive is not None and self.immersive.isVisible() else None
+        self.quick.open(imm)
 
     def _show_sessions(self) -> None:
         self.go(NOW)
@@ -800,7 +805,7 @@ class MainWindow(QMainWindow):
         super().resizeEvent(e)
         if self.toast_widget.isVisible():
             self.toast_widget.reposition()
-        if self.quick.isVisible():
+        if self.quick.isVisible() and self.quick.parentWidget() is self.centralWidget():
             self.quick.setGeometry(self.centralWidget().rect())
 
     def closeEvent(self, e):

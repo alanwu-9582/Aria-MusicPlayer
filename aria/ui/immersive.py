@@ -237,6 +237,7 @@ class Controls(QWidget):
 
 class ImmersiveView(QWidget):
     closed = Signal()
+    quick_requested = Signal()                         # Ctrl+K: Quick Actions over this window
 
     def __init__(self, playback, settings, source_lyrics: LyricsView, actions=None):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
@@ -323,6 +324,9 @@ class ImmersiveView(QWidget):
 
     def keyPressEvent(self, e):
         k = e.key()
+        if k == Qt.Key.Key_K and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.quick_requested.emit()
+            return
         if k in (Qt.Key.Key_Escape, Qt.Key.Key_F11):
             self.close()
         elif k == Qt.Key.Key_Space:
@@ -396,8 +400,12 @@ class ImmersiveView(QWidget):
         self.controls.show_animated(True)
         self._idle.start()
 
+    def _palette_open(self) -> bool:
+        from aria.ui.quick import QuickActions
+        return any(q.isVisible() for q in self.findChildren(QuickActions))
+
     def _go_idle(self) -> None:
-        if self.controls.underMouse():
+        if self.controls.underMouse() or self._palette_open():
             self._idle.start()
             return
         self.controls.show_animated(False)
@@ -408,7 +416,8 @@ class ImmersiveView(QWidget):
         super().mouseMoveEvent(e)
 
     def mouseDoubleClickEvent(self, e):
-        self.close()
+        if not self._palette_open():
+            self.close()
 
     def event(self, e):
         if e.type() == e.Type.HoverMove:
@@ -547,6 +556,11 @@ class ImmersiveView(QWidget):
         hint = self.controls.sizeHint()
         self.controls.setGeometry((self.width() - hint.width()) // 2, self.height() - 108, hint.width(), hint.height())
         self.controls.raise_()
+        from aria.ui.quick import QuickActions
+        for q in self.findChildren(QuickActions):           # Ctrl+K stays on top, the window's size
+            if q.isVisible():
+                q.setGeometry(self.rect())
+                q.raise_()
         self._invalidate()
 
     def resizeEvent(self, e):
