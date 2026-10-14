@@ -902,11 +902,11 @@ def find(track: Track, enhanced: bool, recommender=None, prefer_words: bool = Fa
 
 # ---- the listener's per-song choices -------------------------------------------------
 
-MAX_TAPS = 20                       # double-click measurements kept per song
+MAX_TAPS = 20                       # Click to Sync measurements kept per song
 
 
 def tap_offset(mode: str, before: list[float], measured: float) -> float:
-    """The timing shift after a double-click measured ``measured`` (s). "on": that measurement
+    """The timing shift after a click measured ``measured`` (s). "on": that measurement
     alone; "smooth": from the second one on, half the average of the earlier ones and half the
     latest, so one hasty click can't throw the timing far off."""
     if mode == "smooth" and before:
@@ -931,7 +931,7 @@ class Prefs:
         self._set(key, "offset", round(seconds, 1) or None)
 
     def taps(self, key: str) -> list[float]:
-        """The shifts measured by double-clicking lines of this song, oldest first."""
+        """The shifts measured by clicking lines of this song (Click to Sync), oldest first."""
         return [float(x) for x in self.data.get(key, {}).get("taps", [])]
 
     def add_tap(self, key: str, seconds: float) -> None:

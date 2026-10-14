@@ -619,12 +619,12 @@ class NowPlayingPage(TintedPage):
         if lyr is None or t is None:
             return
         if step is None:
-            self.lyric_prefs.clear_taps(t.key)          # a fresh start for Double-Click to Sync too
+            self.lyric_prefs.clear_taps(t.key)          # a fresh start for Click to Sync too
         self._apply_offset(0.0 if step is None else lyr.offset + step)
 
     def tap_sync(self, line: int, ago: float) -> None:
-        """A line double-clicked as it starts (``ago`` s since the first click): shift the timing
-        so it starts then — from that click alone, or smoothed with the earlier ones (Settings)."""
+        """Click to Sync: a line right-clicked as it starts (``ago`` s before now): shift the timing so it
+        starts then — from that click alone, or smoothed with the earlier ones (Settings)."""
         mode, lyr, t = self.settings["lyrics_tap_sync"], self.lyrics.lyrics, self.pb.current
         if mode not in ("on", "smooth") or lyr is None or t is None or not lyr.synced or line >= len(lyr.lines):
             return
