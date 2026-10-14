@@ -21,6 +21,7 @@ import re
 import shutil
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
@@ -59,7 +60,9 @@ def engine_available() -> bool:
 
 
 def models_dir():
-    return paths.DATA_DIR / "models"
+    """data/models (ARIA_MODELS_DIR may point a second copy, or a test run, at shared models)."""
+    shared = os.environ.get("ARIA_MODELS_DIR")
+    return Path(shared) if shared else paths.DATA_DIR / "models"
 
 
 def model_path(model_id: str):
@@ -144,7 +147,7 @@ class ModelManager(QObject):
                     f.unlink(missing_ok=True)
             self.finished.emit(model_id, "cancelled" if isinstance(exc, InterruptedError) else str(exc))
 
-        tasks.run(lambda: download(model_id, report, self._cancel), done, failed)
+        tasks.run(lambda: download(model_id, report, self._cancel), done, failed, lane="bulk")
         return True
 
     def cancel(self) -> None:

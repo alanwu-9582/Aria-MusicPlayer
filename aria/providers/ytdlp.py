@@ -105,9 +105,11 @@ def download(url: str, outtmpl: str, progress: Callable[[float], None] | None = 
         if progress and d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             if total:
-                progress(d.get("downloaded_bytes", 0) / total)
+                progress(d.get("downloaded_bytes", 0) / total, d.get("speed"))
 
-    with _ydl(format=fmt, outtmpl=outtmpl, progress_hooks=[hook], http_chunk_size=10_485_760) as y:
+    # continuedl: a partial file left by an interrupted download is continued, not started over
+    with _ydl(format=fmt, outtmpl=outtmpl, progress_hooks=[hook], http_chunk_size=10_485_760,
+              continuedl=True, retries=3, fragment_retries=3) as y:
         info = y.extract_info(url, download=True)
         return y.prepare_filename(info)
 

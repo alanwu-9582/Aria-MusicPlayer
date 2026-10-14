@@ -1,10 +1,15 @@
-"""Track actions shared by every list: play, queue, save, download, open, copy."""
+"""Track actions shared by every list: play, queue, save, download, open, copy.
+
+Every list offers them the same way: its main action on double-click / Enter (play — or, on the
+Shelf, open), at most a few small icons on the hovered or selected row (Add to Queue first, then
+Save or Download), and everything else in the right-click menu."""
 
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
+import time
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -24,6 +29,7 @@ class TrackActions:
         self.toast = toast
         self.switcher = None              # SourceSwitcher, set by the window
         self.edit_info = None             # Edit Song Info…, set by the window
+        self._queued_note = (0.0, 0)      # when "Added to queue" last showed, and how many it counts
 
     def add_to_playlist(self, pid: str | None, tracks: list[Track], parent: QWidget) -> None:
         """Add to an existing playlist, or (pid None) ask for a name and create one."""
@@ -151,9 +157,19 @@ class TrackActions:
             self.toast("success", "Playing next" if len(tracks) == 1 else f"{len(tracks)} songs playing next")
 
     def enqueue(self, tracks: list[Track]) -> None:
-        if tracks:
-            self.pb.enqueue(tracks)
-            self.toast("success", "Added to queue" if len(tracks) == 1 else f"Added {len(tracks)} songs to queue")
+        """Add to the queue. Songs added one after another share one note ("Added 3 songs to
+        queue"), not a toast each; the row's queue icon also stays lit while the song is queued."""
+        if not tracks:
+            return
+        self.pb.enqueue(tracks)
+        when, n = self._queued_note
+        n = (n if time.monotonic() - when < 2.6 else 0) + len(tracks)
+        self._queued_note = (time.monotonic(), n)
+        self.toast("success", "Added to queue" if n == 1 else f"Added {n} songs to queue")
+
+    def queued(self, track: Track) -> bool:
+        """In the queue already (the Add to Queue icon shows it)."""
+        return any(t.key == track.key for t in self.pb.queue)
 
     def save(self, tracks: list[Track]) -> None:
         added = self.library.add(tracks)

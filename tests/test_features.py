@@ -397,3 +397,19 @@ def test_collage_picks_queue_first_without_the_current_song_or_repeats():
     recs = [yt("r1", "Song 3"), yt("r2", "Song 2 (Official Video)"), yt("r3", "Song 4")]
     picked = collage.pick(queue, recs, cur, 10)
     assert [(t.id, src) for t, src in picked] == [("q1", "Queue"), ("q2", "Queue"), ("r1", "For You"), ("r3", "For You")]
+
+
+def test_cover_wall_packs_every_song_without_gaps():
+    from aria.ui.widgets.cover_wall import wall_layout
+    keys = [f"youtube:{i:03d}" for i in range(120)]
+    for cols in (2, 4, 7, 10):
+        cells, rows = wall_layout(keys, cols)
+        taken = {}
+        for n, (x, y, w, h) in enumerate(cells):
+            for i in range(w):
+                for j in range(h):
+                    assert x + i < cols and (x + i, y + j) not in taken
+                    taken[(x + i, y + j)] = n
+        # every cell is used, except a few at the very end
+        assert all((x, y) in taken for y in range(rows - 2) for x in range(cols))
+        assert wall_layout(keys, cols) == (cells, rows)          # the same wall each time

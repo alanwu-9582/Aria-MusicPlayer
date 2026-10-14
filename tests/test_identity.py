@@ -137,3 +137,35 @@ def test_short_romaji_and_kanji_titles_are_not_chinese(tmp_path):
         zh = smart.SmartCollection("z", [{"field": "language", "value": "zh"}])
         assert smart.evaluate(zh, [t], [], {}) == []                # kanji alone never makes it Chinese
     identity._overrides = None
+
+
+def test_versions_are_tags_and_search_names_the_title():
+    from aria.core import identity
+    from aria.core.models import Track
+    live = Track(source="youtube", id="v1", title="YOASOBI - 夜に駆ける (Live)", artist="YOASOBI")
+    assert identity.display_parts(live) == ("夜に駆ける", "YOASOBI", "Live")
+    assert identity.display(live)[0] == "夜に駆ける (Live)"
+    assert identity.version_tag("TV size") == "TV Size" and identity.version_tag("歌ってみた") == "Cover"
+    # a bracket of subtitle words is decoration, not the name
+    subs = Track(source="youtube", id="v2", title="【中日歌詞】YOASOBI - 「夜に駆ける」", artist="someone")
+    assert identity.display_parts(subs)[0] == "夜に駆ける"
+    # "Title - Artist" with nothing to tell the sides apart: the name searched for is the title
+    flipped = Track(source="youtube", id="v3", title="夜に駆ける - YOASOBI", artist="小茶杯")
+    series = Track(source="youtube", id="v4", title="YOASOBI - 夜に駆ける / THE FIRST TAKE", artist="THE FIRST TAKE")
+    identity.hint_titles([flipped, series], "夜に駆ける")
+    try:
+        assert identity.display_parts(flipped)[:2] == ("夜に駆ける", "YOASOBI")
+        assert identity.display_parts(series)[:2] == ("夜に駆ける", "YOASOBI")
+        assert identity.song_key(flipped) == identity.song_key(live)
+    finally:
+        identity.hint_titles([], None)
+
+
+def test_search_folds_uploads_of_one_song():
+    from aria.core.models import Track
+    from aria.ui.pages.search import group_versions
+    a = Track(source="youtube", id="g1", title="YOASOBI「夜に駆ける」Official Music Video", artist="Ayase / YOASOBI")
+    b = Track(source="youtube", id="g2", title="YOASOBI - 夜に駆ける (Live)", artist="YOASOBI")
+    c = Track(source="youtube", id="g3", title="米津玄師 - Lemon", artist="Kenshi Yonezu 米津玄師")
+    groups = group_versions([a, c, b])
+    assert [[t.id for t in g] for g in groups] == [["g1", "g2"], ["g3"]]

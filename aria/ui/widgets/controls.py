@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QAbstractButton, QHBoxLayout, QLabel, QMenu, QPus
                                QToolButton, QWidget)
 
 from aria.ui import icons
-from aria.ui.theme import ROW, font, theme
+from aria.ui.theme import MICRO_MS, ROW, font, theme
 
 
 class Button(QPushButton):
@@ -145,7 +145,7 @@ class Toggle(QAbstractButton):
         self._hover = False
         self._pos = 0.0                                  # knob: 0 off … 1 on
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(140)
+        self._anim.setDuration(MICRO_MS)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(self._move)
         self.toggled.connect(self._slide)
@@ -163,9 +163,8 @@ class Toggle(QAbstractButton):
         self.update()
 
     def _slide(self, on: bool) -> None:
-        from aria.ui.widgets import rack as rack_mod
         self._anim.stop()
-        if not self.isVisible() or rack_mod.reduce_motion:
+        if not self.isVisible() or theme.reduce_motion:
             self._move(1.0 if on else 0.0)               # nothing to watch: just be there
             return
         self._anim.setStartValue(self._pos)

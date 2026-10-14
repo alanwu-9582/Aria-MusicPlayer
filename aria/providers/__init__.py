@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 import re
 import threading
+from concurrent.futures import Future
 
 from aria.providers import http  # noqa: F401  (sets up TLS before anything connects)
-from aria.core.models import BILIBILI, LOCAL, SOUNDCLOUD, SPOTIFY, YOUTUBE, Stream, Track
+from aria.core.models import BILIBILI, LOCAL, SPOTIFY, YOUTUBE, Stream, Track
+from aria.providers import errors
 from aria.providers.base import Provider
 from aria.providers.bilibili import Bilibili
 from aria.providers.generic import SoundCloud, Web
@@ -23,7 +25,7 @@ web = Web()
 # Order matters: the generic web provider is the fallback.
 PROVIDERS: list[Provider] = [youtube, bilibili, spotify, soundcloud, web]
 BY_SOURCE: dict[str, Provider] = {p.source: p for p in PROVIDERS}
-SEARCHABLE = [YOUTUBE, BILIBILI, SOUNDCLOUD]
+SEARCHABLE = [p.source for p in PROVIDERS if p.capabilities.search]       # youtube, bilibili, soundcloud
 
 _URL = re.compile(r"^(https?://|spotify:)|^(www\.)?(youtube\.com|youtu\.be|bilibili\.com|b23\.tv|open\.spotify\.com|soundcloud\.com)/|^BV[0-9A-Za-z]{10}$")
 
@@ -83,22 +85,59 @@ def search_albums(query: str, limit: int = 12) -> list[dict]:
 
 _streams: dict[str, Stream] = {}
 _streams_lock = threading.Lock()
+_inflight: dict[str, Future] = {}          # one resolution per song at a time; others wait for it
+WAIT = 90.0                                # longest a second caller waits for the first one's result
 
 
-def stream(track: Track, force: bool = False) -> Stream:
-    """Playable location for a track. Local copies win; remote urls are cached until they expire."""
+def stream(track: Track, force: bool = False, background: bool = False) -> Stream:
+    """Playable location for a track. Local copies win; remote urls are cached until they expire
+    (the expiry the address itself carries). Two callers asking for the same song at once share
+    one resolution; network trouble is retried a few times (bounded); a provider that asked for a
+    pause (429) isn't troubled by ``background`` work (prefetch) until it's over. Failures come
+    back as :class:`errors.ProviderError` (classified)."""
     if track.local_path and os.path.exists(track.local_path):
         return Stream(url=track.local_path)
     if track.source == LOCAL:
-        raise FileNotFoundError(track.local_path or track.id)
+        raise errors.ProviderError(errors.ProviderFailure(errors.ErrorKind.NOT_FOUND, LOCAL, False, None,
+                                                          "The file isn’t there any more"), track.local_path or track.id)
     with _streams_lock:
         cached = _streams.get(track.key)
     if cached and cached.fresh and not force:
         return cached
-    s = BY_SOURCE[track.source].stream(track)
+    provider = BY_SOURCE[track.source]
+    if background and errors.cooldowns.cooling(provider.source):
+        raise errors.ProviderError(errors.ProviderFailure(errors.ErrorKind.RATE_LIMITED, provider.source, False,
+                                                          errors.cooldowns.cooling(provider.source),
+                                                          errors.MESSAGES[errors.ErrorKind.RATE_LIMITED]))
     with _streams_lock:
-        _streams[track.key] = s
-    return s
+        pending = _inflight.get(track.key)
+        if pending is None:
+            pending = _inflight[track.key] = Future()
+            mine = True
+        else:
+            mine = False
+    if not mine:
+        return pending.result(timeout=WAIT)          # the same song is being resolved: its answer is ours
+    try:
+        s = errors.retry(lambda: provider.stream(track), provider.source)
+    except Exception as exc:
+        pending.set_exception(exc)
+        raise
+    else:
+        with _streams_lock:
+            _streams[track.key] = s
+        pending.set_result(s)
+        return s
+    finally:
+        with _streams_lock:
+            if _inflight.get(track.key) is pending:
+                del _inflight[track.key]
+
+
+def forget_stream(track: Track) -> None:
+    """The cached address stopped working (403, expired): only this song's entry goes."""
+    with _streams_lock:
+        _streams.pop(track.key, None)
 
 
 def has_fresh_stream(track: Track) -> bool:

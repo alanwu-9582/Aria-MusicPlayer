@@ -21,27 +21,25 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QTextLayout, QT
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from aria.core.lyrics import Lyrics
-from aria.ui.theme import UI_FAMILIES, font, theme
+from aria.ui.theme import EMPHASIS_MS, STANDARD_MS, UI_FAMILIES, font, theme
 from aria.ui.widgets.tint import mix as _mix
 from aria.ui.widgets.tracklist import paint_empty
 
 GAP = 12
 STANZA = 14
 FOLLOW_PAUSE = 4.0           # seconds the view stays where the user scrolled it
-EMPHASIS_MS = 240
 
 
 class LyricsView(QWidget):
     seek = Signal(float)
     changed = Signal()                           # lyrics or their state changed (Immersive Mode follows)
     show_trans = True                            # Settings › Lyrics Translation
-    show_words = True                            # Settings › Word-by-Word Lyrics
     _views: weakref.WeakSet = weakref.WeakSet()
 
     @classmethod
-    def set_extras(cls, trans: bool, words: bool) -> None:
-        """The two lyric settings changed: every lyrics view re-lays out once."""
-        cls.show_trans, cls.show_words = bool(trans), bool(words)
+    def set_extras(cls, trans: bool) -> None:
+        """The translation setting changed: every lyrics view re-lays out once."""
+        cls.show_trans = bool(trans)
         for v in list(cls._views):
             v._relayout()
             v._snap()
@@ -51,12 +49,16 @@ class LyricsView(QWidget):
         super().__init__(parent)
         self.immersive = immersive
         self.centered = centered
-        self.scale = 36                          # immersive type: window height / scale
+        self.scale = 36                          # immersive type: window height / scale (unless ``px`` is set)
+        self.px: int | None = None               # immersive type size set by the page (before fitting)
+        self._fit = 1.0                          # immersive: type made a little smaller so lines fit
+        self._breaks: dict[int, tuple[int, bool]] = {}   # line → (where it's split in two, a break char added)
         self.lyrics: Lyrics | None = None
         self.state = "empty"                     # empty | loading | none | ready
         self._current = -1
         self._previous = -1
         self._emph = 1.0                         # 0 → 1 while the sung line changes
+        self._placed = False
         self._offset = 0.0
         self._user_scrolled = 0.0
         self._layout: list[QRect] = []
@@ -66,11 +68,11 @@ class LyricsView(QWidget):
         self._hover = -1
         LyricsView._views.add(self)
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(420 if immersive else 380)
+        self._anim.setDuration(EMPHASIS_MS)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(self._set_offset)
         self._fade = QVariantAnimation(self)
-        self._fade.setDuration(EMPHASIS_MS)
+        self._fade.setDuration(STANDARD_MS)
         self._fade.setStartValue(0.0)
         self._fade.setEndValue(1.0)
         self._fade.valueChanged.connect(self._set_emph)
@@ -87,6 +89,7 @@ class LyricsView(QWidget):
         self.lyrics = lyrics if state == "ready" else None
         self._current = self._previous = -1
         self._offset = 0.0
+        self._placed = False                     # the first line found is shown in place, not scrolled to
         self._relayout()
         self.update()
         self.changed.emit()
@@ -108,17 +111,28 @@ class LyricsView(QWidget):
             self.update(self._layout[i].translated(0, -int(self._offset)).adjusted(-4, -6, 4, 6))
         if i != self._current:
             self._previous, self._current = self._current, i
-            self._fade.stop()
-            self._fade.start()
-            if time.monotonic() - self._user_scrolled > FOLLOW_PAUSE:
-                self._follow()
+            if not self._placed or theme.reduce_motion:
+                # lyrics just arrived (or Immersive Mode just opened on them): already at the line
+                self._placed = True
+                self._fade.stop()
+                self._emph = 1.0
+                self._snap()
+            else:
+                self._fade.stop()
+                self._fade.start()
+                if time.monotonic() - self._user_scrolled > FOLLOW_PAUSE:
+                    self._follow()
             self.update()
 
     # ---- type ------------------------------------------------------------------
 
     def _size(self) -> int:
-        """Immersive type scales with the screen it's on."""
-        return max(18, min(44, int(self.window().height() / self.scale))) if self.immersive else 0
+        """Immersive type scales with the screen it's on (or the size the page set), made a little
+        smaller when that lets most lines fit on one row."""
+        if not self.immersive:
+            return 0
+        base = self.px or max(18, min(44, int(self.window().height() / self.scale)))
+        return max(16, int(base * self._fit))
 
     def _big(self) -> QFont:
         if not self.immersive:
@@ -158,7 +172,7 @@ class LyricsView(QWidget):
         return self.lyrics.trans[i] or ""
 
     def _words_on(self, i: int) -> bool:
-        return bool(self.show_words and self.lyrics and self.lyrics.word_timed and 0 <= i < len(self.lyrics.words)
+        return bool(self.lyrics and self.lyrics.word_timed and 0 <= i < len(self.lyrics.words)
                     and self.lyrics.words[i])
 
     def _anchor(self) -> float:
@@ -166,10 +180,61 @@ class LyricsView(QWidget):
 
     # ---- layout --------------------------------------------------------------
 
+    def _shown(self, i: int, text: str) -> str:
+        """Line ``i`` as drawn: split in two at a balanced place when it doesn't fit one row."""
+        b = self._breaks.get(i)
+        if not b:
+            return text
+        at, added = b
+        return text[:at] + "\u2028" + text[at + (0 if added else 1):]
+
+    def _fit_lines(self, width: int) -> None:
+        """Immersive: shrink the type a little (never below 88 %) so most lines fit one row, then
+        split each line that still doesn't fit into two of about the same length — at a space or
+        a punctuation mark near the middle, else between two CJK characters (never inside a word)."""
+        self._fit, self._breaks = 1.0, {}
+        if not self.immersive or not self.lyrics:
+            return
+        texts = [s for _t, s in self.lyrics.lines if s]
+        if not texts:
+            return
+        fm = QFontMetrics(self._big())
+        widths = sorted(fm.horizontalAdvance(s) for s in texts)
+        typical = widths[min(len(widths) - 1, int(len(widths) * 0.8))]
+        if typical > width:
+            self._fit = max(0.88, width / typical)
+        fm = QFontMetrics(self._big())
+        for i, (_t, text) in enumerate(self.lyrics.lines):
+            if not text or fm.horizontalAdvance(text) <= width:
+                continue
+            best = None
+            unit = fm.averageCharWidth() or 8
+            for k in range(1, len(text)):
+                a, b = text[k - 1], text[k]
+                space = a == " "
+                punct = a in "，、。！？,;；：:）)」』…~〜" or b in "（(「『"
+                cjk = _cjk(a) and _cjk(b)
+                if not (space or punct or cjk):
+                    continue
+                left = fm.horizontalAdvance(text[:k].rstrip())
+                right = fm.horizontalAdvance(text[k:].lstrip())
+                # rather at a space or a mark, or where a word plainly begins (kana followed by kanji
+                # or katakana); never inside a katakana word or between a kanji and its kana ending
+                cost = 0.0 if space or punct else _JOIN.get((_script(a), _script(b)), 4.0)
+                if cost == _JOIN[("hira", "hira")] and a in "はがをもにでとへ" and k >= 2 and text[k - 2] != a:
+                    cost = 8.0                            # after a particle: "わかりは / しない"
+                score = abs(left - right) + cost * unit
+                if best is None or score < best[0]:
+                    best = (score, k - 1 if space else k, not space)
+            if best is not None:
+                self._breaks[i] = (best[1], best[2])
+
     def _relayout(self) -> None:
         self._layout = []
         if not self.lyrics:
             return
+        pad = 8 if self.immersive else 16
+        self._fit_lines(max(80, self.width() - 2 * pad))
         gap = int(self._size() * 0.7) if self.immersive else GAP
         stanza = int(self._size() * 0.8) if self.immersive else STANZA
         y = 0
@@ -184,7 +249,7 @@ class LyricsView(QWidget):
                 self._layout.append(QRect(pad, y, w, 0))
                 self._main_h.append(0)
                 continue
-            r = fm.boundingRect(QRect(0, 0, w, 10_000), Qt.TextFlag.TextWordWrap, text)
+            r = fm.boundingRect(QRect(0, 0, w, 10_000), Qt.TextFlag.TextWordWrap, self._shown(i, text).replace("\u2028", "\n"))
             h = r.height()
             self._main_h.append(h)
             tr = self._trans(i)
@@ -334,7 +399,7 @@ class LyricsView(QWidget):
             else:
                 p.setFont(self._font(i))
                 p.setPen(color)
-                p.drawText(main, Qt.TextFlag.TextWordWrap | self._align(), text)
+                p.drawText(main, Qt.TextFlag.TextWordWrap | self._align(), self._shown(i, text).replace("\u2028", "\n"))
             tr = self._trans(i)
             if tr:
                 quiet = QColor(color)
@@ -361,7 +426,7 @@ class LyricsView(QWidget):
 
     def _paint_words(self, p: QPainter, rect: QRectF, i: int, text: str, sung: QColor, rest: QColor) -> None:
         """The sung line, filled word by word: the part sung so far bright, the rest quiet."""
-        layout = QTextLayout(text, self._font(i))
+        layout = QTextLayout(self._shown(i, text), self._font(i))
         opt = QTextOption(self._align())
         opt.setWrapMode(QTextOption.WrapMode.WordWrap)
         layout.setTextOption(opt)
@@ -382,6 +447,9 @@ class LyricsView(QWidget):
         done = self._sung_chars(i, text)
         if done <= 0:
             return
+        b = self._breaks.get(i)
+        if b and b[1] and done > b[0]:
+            done += 1                                     # past the break that was added
         p.save()
         p.setPen(sung)
         for k in range(layout.lineCount()):
@@ -395,3 +463,25 @@ class LyricsView(QWidget):
             p.setClipRect(QRectF(rect.left() + nat.left() - 2, rect.top() + ln.y(), x - nat.left() + 2, ln.height()))
             layout.draw(p, rect.topLeft())
         p.restore()
+
+
+def _cjk(ch: str) -> bool:
+    o = ord(ch)
+    return 0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF or 0xF900 <= o <= 0xFAFF
+
+
+def _script(ch: str) -> str:
+    o = ord(ch)
+    if 0x3040 <= o <= 0x309F:
+        return "hira"
+    if 0x30A0 <= o <= 0x30FF:
+        return "kata"
+    if 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF:
+        return "han"
+    return "other"
+
+
+# what splitting between two scripts costs (in characters' widths): a word starts at hira→han
+_JOIN = {("hira", "han"): 0.0, ("hira", "kata"): 0.0, ("han", "kata"): 3.0, ("kata", "han"): 3.0,
+         ("han", "han"): 10.0, ("hira", "hira"): 20.0, ("kata", "hira"): 25.0, ("han", "hira"): 30.0,
+         ("kata", "kata"): 40.0}

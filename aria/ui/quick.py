@@ -1,8 +1,11 @@
 """Quick Actions (Ctrl+K): a floating command field for songs and player commands.
 
 Type to filter commands and find songs — first in your own music (library,
-playlists, history, queue), then on YouTube. ↑↓ choose, Enter runs (plays a
+playlists, history, queue), then a few from YouTube. ↑↓ choose, Enter runs (plays a
 song), Shift+Enter adds a song to the queue, Esc closes.
+
+It stays quick and light on purpose: a handful of results, play or queue, nothing more.
+Versions, browsing and everything else are the Search page's (“Search for …” goes there).
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import QAbstractItemView, QFrame, QLineEdit, QListView, QStyledItemDelegate, QVBoxLayout, QWidget
 
 from aria import providers
-from aria.core import tasks, textnorm
+from aria.core import identity, tasks, textnorm
 from aria.core.models import Track
 from aria.ui import icons
 from aria.ui.theme import font, theme
@@ -23,8 +26,8 @@ from aria.ui.widgets import thumbs as thumbs_mod
 
 ROW, HEAD = 40, 26
 MAX_ROWS = 9
-LOCAL_SONGS = 6
-ONLINE_SONGS = 5
+LOCAL_SONGS = 5
+ONLINE_SONGS = 3
 
 
 @dataclass
@@ -335,7 +338,8 @@ class QuickActions(QWidget):
 
     def _song_item(self, t: Track) -> Item:
         a = self.w.actions
-        return Item("track", t.title, " · ".join(x for x in (t.artist, t.source_label) if x), track=t,
+        title, artist = identity.display(t)
+        return Item("track", title, " · ".join(x for x in (artist, t.source_label) if x), track=t,
                     run=lambda: a.play([t]), alt=lambda: a.enqueue([t]))
 
     def _rebuild(self, keep_selection: bool = False) -> None:

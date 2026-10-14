@@ -43,7 +43,8 @@ from aria.core import identity, langid, textnorm
 from aria.core.models import BILIBILI, SPOTIFY, YOUTUBE, Track
 
 LRCLIB = "https://lrclib.net/api"
-ALGO = 4                          # bump when choosing / validating changes: weaker cached results get re-checked
+ALGO = 5                          # bump when choosing / validating changes: weaker cached results get re-checked
+MORE_SEARCHES = 3                 # when no timeline turned up: a few more LRCLIB searches before plain text
 MISS_TTL = 3 * 24 * 3600          # don't re-ask for songs that had no lyrics for a few days
 MAX_SEARCHES = 5                  # LRCLIB searches per song, on top of the exact lookup
 MAX_COMMENTS = 40
@@ -65,6 +66,7 @@ class Lyrics:
     words: list[list] = field(default_factory=list)     # per line: [[start, text], …] when timed word by word
     lang: str = ""                    # language of the original lines (ja | zh | ko | en | "")
     romanized: bool = False           # the lines themselves are romaji / pinyin (no original script found)
+    words_estimated: bool = False     # the line times are as found; the word times were estimated here
 
     def __post_init__(self):
         if not self.sync:
@@ -86,7 +88,8 @@ class Lyrics:
         if self.sync == ALIGNED:
             return ("Estimated Sync · Word by Word" if self.word_timed else "Estimated Sync") + tail
         if self.sync == SYNCED:
-            kind = "Word Synced" if self.word_timed else "Line Synced"
+            kind = ("Line Synced · Estimated Words" if self.words_estimated else "Word Synced") \
+                if self.word_timed else "Line Synced"
             return (f"{kind} · {self.source}" if self.source else kind) + tail
         return "Plain Lyrics" + tail
 
@@ -100,6 +103,8 @@ class Lyrics:
             d["roman"] = self.roman
         if any(self.words):
             d["words"] = self.words
+        if self.words_estimated:
+            d["words_estimated"] = True
         return d
 
     @classmethod
@@ -107,7 +112,8 @@ class Lyrics:
         return cls([(t, s) for t, s in d.get("lines", [])], d.get("synced", False), d.get("source", ""),
                    d.get("sync", ""), d.get("confidence", 0.0), list(d.get("issues", [])),
                    trans=d.get("trans", []), roman=d.get("roman", []), words=d.get("words", []),
-                   lang=d.get("lang", ""), romanized=d.get("romanized", False))
+                   lang=d.get("lang", ""), romanized=d.get("romanized", False),
+                   words_estimated=d.get("words_estimated", False))
 
     def index_at(self, seconds: float) -> int:
         """Line being sung at ``seconds`` (synced only), -1 before the first."""
@@ -301,6 +307,8 @@ def from_local_file(track: Track) -> Lyrics | None:
         if lyr is not None and lyr.lines:
             mine = _ARIA_TAG.search(raw) if ext == ".lrc" else None
             lyr.source, lyr.confidence = (mine.group(1).strip() if mine else "Local File"), 1.0
+            if lyr.source.endswith(ESTIMATED):
+                lyr.source, lyr.words_estimated = lyr.source[: -len(ESTIMATED)].strip(), True
             return classify(lyr)
     return None
 
@@ -309,6 +317,7 @@ def from_local_file(track: Track) -> Lyrics | None:
 
 LYRIC_FILES = (".lrc", ".ttml")
 _ARIA_TAG = re.compile(r"^\[re:\s*Aria\s*·\s*([^\]]*)\]", re.MULTILINE)
+ESTIMATED = " · Estimated Words"           # in Aria's tag: the word times were estimated here
 
 
 def sidecars(audio_path: str) -> list[str]:
@@ -343,7 +352,7 @@ def _stamp(t: float) -> str:
 
 def to_lrc(lyr: Lyrics, title: str = "", artist: str = "") -> str:
     """LRC text: word times as <mm:ss.xx>, a translation / romanization as a second line at the same time."""
-    out = [f"[ti:{title}]" if title else "", f"[ar:{artist}]" if artist else "", f"[re:Aria · {lyr.source or 'LRCLIB'}]"]
+    out = [f"[ti:{title}]" if title else "", f"[ar:{artist}]" if artist else "", f"[re:Aria · {lyr.source or 'LRCLIB'}{ESTIMATED if lyr.words_estimated else ''}]"]
     for i, (t, text) in enumerate(lyr.lines):
         if t is None:
             continue
@@ -670,7 +679,10 @@ def _scripts(text: str) -> list[str]:
     return out
 
 
-def _lrclib_candidates(http, track: Track, titles: list[str], artist: str) -> list[dict]:
+def _lrclib_candidates(http, track: Track, titles: list[str], artist: str, prefer_words: bool = False) -> list[dict]:
+    """LRCLIB entries that may be this song: the exact lookup, then up to MAX_SEARCHES searches —
+    fewer once a good timeline in the original script turned up (with ``prefer_words``, once one
+    timed word by word did)."""
     seen: dict = {}
 
     def keep(items):
@@ -701,7 +713,8 @@ def _lrclib_candidates(http, track: Track, titles: list[str], artist: str) -> li
     searches.insert(min(len(searches), MAX_SEARCHES - 1), {"q": titles[0]})   # the uploader may be a channel
     for params in searches[:MAX_SEARCHES]:
         if any(c.get("syncedLyrics") and _lrclib_fits(track, c, titles, artist, synced=True)
-               and not langid.detect(c["syncedLyrics"][:600]).romanized for c in seen.values()):
+               and not langid.detect(c["syncedLyrics"][:600]).romanized
+               and (not prefer_words or _WORD_TAG.search(c["syncedLyrics"])) for c in seen.values()):
             break                                       # a good synced match in the original script: enough
         try:
             r = http.session().get(f"{LRCLIB}/search", params=params, timeout=8)
@@ -726,10 +739,32 @@ def _lrclib_fits(track: Track, c: dict, titles: list[str], artist: str, synced: 
     return True
 
 
-def _from_lrclib(http, track: Track) -> tuple[Lyrics | None, Lyrics | None]:
-    """(best synced, best plain) from LRCLIB."""
+def _more_lrclib(http, titles: list[str], seen: set) -> list[dict]:
+    """No timeline among the first results: a few more searches by the song's name alone (the
+    way Choose Lyrics looks), before settling for plain text."""
+    out: list[dict] = []
+    for params in ([{"track_name": v} for v in titles[:2]] + [{"q": v} for v in titles[1:3]])[:MORE_SEARCHES]:
+        try:
+            r = http.session().get(f"{LRCLIB}/search", params=params, timeout=8)
+            if r.status_code != 200:
+                continue
+            for c in r.json()[:20]:
+                if isinstance(c, dict) and c.get("id") not in seen:
+                    seen.add(c.get("id"))
+                    out.append(c)
+        except Exception:
+            continue
+        if any(c.get("syncedLyrics") for c in out):
+            break
+    return out
+
+
+def _from_lrclib(http, track: Track, prefer_words: bool = False) -> tuple[Lyrics | None, Lyrics | None]:
+    """(best synced, best plain) from LRCLIB. Timed word by word beats timed by line; the song's
+    own script beats a romanization; when nothing timed turns up, a few more searches run before
+    plain text is all there is."""
     titles, artist = title_variants(track), _names(track)[1]
-    cands = _lrclib_candidates(http, track, titles, artist)
+    cands = _lrclib_candidates(http, track, titles, artist, prefer_words)
 
     def closeness(c):
         return -abs(track.duration - c["duration"]) if track.duration and c.get("duration") else -5
@@ -737,17 +772,24 @@ def _from_lrclib(http, track: Track) -> tuple[Lyrics | None, Lyrics | None]:
     synced_c: list[Lyrics] = []
     plain_c: list[Lyrics] = []
     lang = song_language(track)[0]
-    for c in sorted(cands, key=closeness, reverse=True):
-        if c.get("syncedLyrics") and _lrclib_fits(track, c, titles, artist, True):
-            lyr = parse_lrc_full(c["syncedLyrics"])
-            if not check_timeline(lyr.lines, track.duration) and lang_ok(track, [s for _t, s in lyr.lines]):
-                lyr.source, lyr.confidence = "LRCLIB", 0.95
-                synced_c.append(classify(lyr))
-        if _valid_plain(c.get("plainLyrics") or "") and _lrclib_fits(track, c, titles, artist, False) \
-                and lang_ok(track, c["plainLyrics"].splitlines()):
-            lyr = pair_rows(Lyrics(_plain(c["plainLyrics"]), False, "LRCLIB", confidence=0.8), lang)
-            plain_c.append(classify(lyr))
-    # the song's own script first: original plain text beats a romanized timeline (it can be aligned)
+
+    def weigh(found: list[dict]) -> None:
+        for c in sorted(found, key=closeness, reverse=True):
+            if c.get("syncedLyrics") and _lrclib_fits(track, c, titles, artist, True):
+                lyr = parse_lrc_full(c["syncedLyrics"])
+                if not check_timeline(lyr.lines, track.duration) and lang_ok(track, [s for _t, s in lyr.lines]):
+                    lyr.source, lyr.confidence = "LRCLIB", 0.95
+                    synced_c.append(classify(lyr))
+            if _valid_plain(c.get("plainLyrics") or "") and _lrclib_fits(track, c, titles, artist, False) \
+                    and lang_ok(track, c["plainLyrics"].splitlines()):
+                lyr = pair_rows(Lyrics(_plain(c["plainLyrics"]), False, "LRCLIB", confidence=0.8), lang)
+                plain_c.append(classify(lyr))
+
+    weigh(cands)
+    if not any(not x.romanized for x in synced_c):
+        weigh(_more_lrclib(http, titles, {c.get("id") for c in cands}))
+    # word by word first, then the song's own script (original plain text beats a romanized timeline)
+    synced_c.sort(key=lambda x: (x.romanized, not x.word_timed))
     synced = next((x for x in synced_c if not x.romanized), None)
     plain = next((x for x in plain_c if not x.romanized), None)
     if synced is None and plain is None:
@@ -820,15 +862,17 @@ def _from_video_text(texts: list[tuple[str, str, int]], track: Track, reference:
     return best[1] if best else None
 
 
-def find(track: Track, enhanced: bool, recommender=None) -> Lyrics | None:
-    """Gather and compare candidates; blocking. Requests are bounded (≤ 5 LRCLIB, 1 video page,
-    ≤ 2 subtitle files)."""
+def find(track: Track, enhanced: bool, recommender=None, prefer_words: bool = False) -> Lyrics | None:
+    """Gather and compare candidates; blocking. LRCLIB's timelines first (word by word before line
+    by line), then the video's own subtitles and (Deep Search) description and comments; plain text
+    only when nothing timed fits. Requests are bounded (≤ 1 + 5 + 3 LRCLIB, 1 video page, ≤ 2
+    subtitle files)."""
     from aria.providers import bilibili, http, ytdlp     # keep this module importable without network deps
 
     local = from_local_file(track)
     if local is not None:
         return local                                     # the listener's own file beside the song
-    synced, plain = _from_lrclib(http, track)
+    synced, plain = _from_lrclib(http, track, prefer_words)
     if synced is not None:
         return synced                                    # the best kind there is: stop here
     reference = [s for _t, s in plain.lines if s] if plain else None
@@ -940,6 +984,55 @@ def save_alignment(track: Track, plain: Lyrics, result: dict) -> Lyrics:
     d["aligned"] = dict(result, words=[s for _t, s in plain.lines if s])
     write_cache(track, d)
     return _aligned(plain, result["lines"], result.get("confidence", 0.0), result.get("word_times"))
+
+
+def merge_words(synced: Lyrics, result: dict) -> Lyrics:
+    """Line-synced lyrics with word times estimated by Forced Alignment: the lines keep the times
+    they came with; each line's words are spread over its own span the way the alignment heard
+    them (placed proportionally, so the alignment's own line times never move a line)."""
+    est = [w for (t, s), w in zip(result.get("lines", []), result.get("word_times", [])) if s]
+    sung = [i for i, (_t, s) in enumerate(synced.lines) if s]
+    if not est or len(est) != len(sung):
+        return synced
+    out = Lyrics(list(synced.lines), True, synced.source, SYNCED, synced.confidence, list(synced.issues),
+                 trans=list(synced.trans), roman=list(synced.roman), lang=synced.lang, romanized=synced.romanized,
+                 words_estimated=True)
+    starts = [t for t, _s in synced.lines]
+    for n, i in enumerate(sung):
+        words = est[n]
+        if not words:
+            continue
+        begin = starts[i]
+        end = next((starts[j] for j in range(i + 1, len(starts)) if starts[j] is not None and starts[j] > begin), None)
+        a0 = words[0][0]
+        a1 = est[n + 1][0][0] if n + 1 < len(est) and est[n + 1] else words[-1][0] + 1.0
+        span = (end - begin) if end is not None else max(1.0, a1 - a0)
+        scale = span / (a1 - a0) if a1 > a0 else 1.0
+        scale = max(0.5, min(1.5, scale)) if end is None else scale
+        out.words[i] = [[round(min(begin + (w - a0) * scale, (end or 1e9) - 0.05), 3), piece] for w, piece in words]
+    return out
+
+
+def estimated_words(track: Track, synced: Lyrics) -> Lyrics | None:
+    """Word times estimated earlier for these very lines (and this very file, when on disk)."""
+    import os
+    from aria.core import aligner
+    d = read_cache(track) or {}
+    est = d.get("word_est")
+    if not est or est.get("words") != [s for _t, s in synced.lines if s]:
+        return None
+    path = track.local_path
+    if path and os.path.exists(path) and est.get("sig") != aligner.file_signature(path) and not est.get("temp"):
+        return None
+    merged = merge_words(synced, est)
+    return merged if merged.words_estimated else None
+
+
+def save_word_estimate(track: Track, synced: Lyrics, result: dict) -> Lyrics:
+    d = read_cache(track) or {}
+    d["word_est"] = dict(result, words=[s for _t, s in synced.lines if s])
+    write_cache(track, d)
+    return merge_words(synced, result)
 
 
 # ---- cache + entry point --------------------------------------------------------
@@ -1061,8 +1154,11 @@ def _chosen(track: Track, choice: dict, d: dict | None) -> Lyrics | None:
     return None
 
 
-def fetch(track: Track, enhanced: bool, recommender=None, force: bool = False) -> Lyrics | None:
-    found = _fetch(track, enhanced, recommender, force)
+def fetch(track: Track, enhanced: bool, recommender=None, force: bool = False,
+          prefer_words: bool = False) -> Lyrics | None:
+    """The song's lyrics (cached). ``prefer_words``: look a little harder for lyrics timed word by
+    word (a download writes the best kind there is beside the song)."""
+    found = _fetch(track, enhanced, recommender, force, prefer_words)
     if found is not None and found.lang:
         identity.note_lyrics_language(track.key, found.lang, 0.9 if not found.romanized else 0.6)
     if found is not None and track.local_path:
@@ -1070,7 +1166,8 @@ def fetch(track: Track, enhanced: bool, recommender=None, force: bool = False) -
     return found
 
 
-def _fetch(track: Track, enhanced: bool, recommender=None, force: bool = False) -> Lyrics | None:
+def _fetch(track: Track, enhanced: bool, recommender=None, force: bool = False,
+           prefer_words: bool = False) -> Lyrics | None:
     d = read_cache(track)
     choice = prefs().choice(track.key)
     if choice:
@@ -1086,16 +1183,19 @@ def _fetch(track: Track, enhanced: bool, recommender=None, force: bool = False) 
             and lang_ok(track, [s for _t, s in d["lines"]]) \
             and not langid.detect_lines([s for _t, s in d["lines"][:30]]).romanized
         current = d.get("v") == ALGO
-        if good_synced or (current and d.get("lines")):
+        words_wanted = prefer_words and not d.get("words") and not d.get("words_looked")
+        if (good_synced or (current and d.get("lines"))) and not words_wanted:
             return Lyrics.from_dict(d)
         if current and not d.get("lines") and time.time() - d.get("time", 0) < MISS_TTL \
                 and (d.get("enhanced") or not enhanced):
             return None                                   # a recent miss (retried now if Deep Search was turned on)
-    found = find(track, enhanced, recommender)
+    found = find(track, enhanced, recommender, prefer_words)
     data = {"v": ALGO, "time": time.time(), "enhanced": enhanced, "ident": identity.signature(track)}
+    if prefer_words:
+        data["words_looked"] = True                       # looked for word-by-word timing once: enough
     data.update(found.to_dict() if found else {"lines": []})
     old = read_cache(track) or {}
-    for k in ("aligned", "chosen"):
+    for k in ("aligned", "chosen", "word_est"):
         if old.get(k):
             data[k] = old[k]                              # an alignment / a pick made earlier stays
     write_cache(track, data)

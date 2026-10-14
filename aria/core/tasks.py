@@ -1,4 +1,15 @@
-"""Run blocking work off the GUI thread and get the result back on it."""
+"""Run blocking work off the GUI thread and get the result back on it.
+
+Work goes into one of a few lanes, each with its own bounded pool, so nothing optional can
+crowd out what the listener is waiting for:
+
+* ``play``     — resolving the song asked for now (and the one right after it): a reserved lane
+* ``io``       — searches, recommendations, lyrics, prefetch and other network work (the default)
+* ``download`` — downloads, one at a time, so a batch never takes the network from playback
+* ``bulk``     — long jobs (model downloads, batch source switching, link checks, backups, waiting on
+                 the analysis worker), so they never hold the lanes above
+* ``images``   — thumbnails, so a page of images never delays anything else
+"""
 
 from __future__ import annotations
 
@@ -9,10 +20,11 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 log = logging.getLogger(__name__)
 
-_pool = QThreadPool()            # searches, stream resolution, downloads, recommendations
-_pool.setMaxThreadCount(6)
-_image_pool = QThreadPool()      # thumbnails, so a page of images never delays playback
-_image_pool.setMaxThreadCount(4)
+LANES = {"play": 2, "io": 5, "download": 1, "bulk": 2, "images": 4}
+_pools: dict[str, QThreadPool] = {}
+for _name, _n in LANES.items():
+    _pools[_name] = QThreadPool()
+    _pools[_name].setMaxThreadCount(_n)
 _alive: set["_Relay"] = set()
 
 
@@ -65,11 +77,11 @@ class _Job(QRunnable):
 
 def run(fn: Callable[[], Any],
         on_done: Callable[[Any], None] | None = None,
-        on_error: Callable[[Exception], None] | None = None, images: bool = False) -> None:
-    """Run ``fn`` in a pool; callbacks fire on the GUI thread."""
+        on_error: Callable[[Exception], None] | None = None, images: bool = False, lane: str = "io") -> None:
+    """Run ``fn`` in ``lane``'s pool; callbacks fire on the GUI thread."""
     relay = _Relay(on_done, on_error)
     _alive.add(relay)
-    (_image_pool if images else _pool).start(_Job(fn, relay))
+    _pools["images" if images else lane].start(_Job(fn, relay))
 
 
 class Progress(QObject):
@@ -109,6 +121,7 @@ class Latest:
 
 
 def shutdown(timeout_ms: int = 1500) -> None:
-    for pool in (_pool, _image_pool):
+    for pool in _pools.values():
         pool.clear()
-    _pool.waitForDone(timeout_ms)
+    for name in ("play", "io"):
+        _pools[name].waitForDone(timeout_ms // 2)

@@ -1,13 +1,14 @@
 """Library: saved tracks, downloads, playlist import / export, local files.
-Shown as a list (for managing) or a Disc Rack (for browsing); both views share
-the same filtered songs, selection and actions."""
+Shown as a list (for managing), a Disc Rack or a Collage of covers (for browsing); all three
+share the same filtered songs, selection and actions. Switching keeps the chosen song and the
+place: the song stays chosen (and in view), or the view opens where the last one was."""
 
 from __future__ import annotations
 
 import logging
 import os
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QPoint, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QLineEdit, QMenu, QStackedWidget, QWidget
 
@@ -19,11 +20,14 @@ from aria.ui.pages.base import Page
 from aria.ui.theme import theme
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets.controls import Button, IconButton, add_item, hbox, label, menu_below
+from aria.ui.widgets.cover_wall import CoverWall
 from aria.ui.widgets.rack import RackPanel, RackView
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import RowAction, TrackListView
 
 log = logging.getLogger(__name__)
+
+VIEWS = ("list", "rack", "collage")
 
 
 class LibraryPage(Page):
@@ -47,7 +51,7 @@ class LibraryPage(Page):
         self.more_btn = IconButton("more", "More", tone="secondary")
         self.more_btn.clicked.connect(self._more)
         self.count = label("", "Caption")
-        self.view_toggle = Segmented(["List", "Disc Rack"], compact=True)
+        self.view_toggle = Segmented(["List", "Disc Rack", "Collage"], compact=True)
         for w in (self.filter, self.play_btn):
             bar.addWidget(w)
         bar.addStretch(1)
@@ -57,7 +61,7 @@ class LibraryPage(Page):
 
         self.list = TrackListView("library", "Your library is empty", "Save songs with the heart in Search.")
         self.list.actions = [
-            RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.list.tracks()[r]])),
+            RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.list.tracks()[r]]), actions.queued),
             RowAction("download", "Download", lambda r: actions.download([self.list.tracks()[r]]),
                       lambda t: bool(t.local_path)),
         ]
@@ -67,23 +71,28 @@ class LibraryPage(Page):
         self.list.context_requested.connect(self._menu)
         self.list.selectionModel().selectionChanged.connect(lambda *_: self._update_buttons())
 
-        # Disc Rack: the same songs as single CDs on shelves.
+        # Disc Rack: the same songs as single CDs on shelves; Collage: a wall of their covers.
+        empty = ("library", "Your library is empty", "Save songs with the heart in Search.")
         self.rack = RackView()
-        self.rack_panel = RackPanel(self.rack, ("library", "Your library is empty", "Save songs with the heart in Search."))
-        self.rack.activated.connect(lambda i: actions.play(self.list.tracks()[i:i + 1]))
-        self.rack.drag_tracks = lambda i: [self.list.tracks()[i]] if 0 <= i < len(self.list.tracks()) else []
-        self.rack.context.connect(lambda i, pos: self._menu([i], pos))
-        self.rack.selection_changed.connect(self._rack_selected)
+        self.wall = CoverWall()
+        self.rack_panel = RackPanel(self.rack, empty)
+        self.wall_panel = RackPanel(self.wall, empty)
+        for view, panel in ((self.rack, self.rack_panel), (self.wall, self.wall_panel)):
+            view.activated.connect(lambda i: actions.play(self.list.tracks()[i:i + 1]))
+            view.drag_tracks = lambda i: [self.list.tracks()[i]] if 0 <= i < len(self.list.tracks()) else []
+            view.context.connect(lambda i, pos: self._menu([i], pos))
+            view.selection_changed.connect(self._rack_selected)
+            panel.add_buttons((("play", "Play", lambda: actions.play(self._targets())),
+                               ("queue-add", "Add to Queue", lambda: actions.enqueue(self._targets())),
+                               ("download", "Download", lambda: actions.download(self._targets()))))
         self.rack.reorderable = True
         self.rack.moved.connect(self._rack_moved)
-        self.rack_panel.add_buttons((("play", "Play", lambda: actions.play(self._targets())),
-                                     ("queue-add", "Add to Queue", lambda: actions.enqueue(self._targets())),
-                                     ("download", "Download", lambda: actions.download(self._targets()))))
-        thumbs_mod.instance().ready.connect(lambda _k: self.rack.isVisible() and self.rack.refresh_covers())
+        thumbs_mod.instance().ready.connect(lambda _k: self.rack_mode and self._board().refresh_covers())
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.list)
         self.stack.addWidget(self.rack_panel)
+        self.stack.addWidget(self.wall_panel)
         self.root.addWidget(self.stack, 1)
         self.view_toggle.changed.connect(self._set_view)
 
@@ -93,12 +102,12 @@ class LibraryPage(Page):
         self.to_queue.dropped.connect(actions.enqueue)
         self.to_trash = dragdrop.DropZone("trash", "Remove from Library", danger=True)
         self.to_trash.dropped.connect(self._remove_tracks)
-        self.drop_bar = QWidget()
+        # laid over the foot of the view (never in the layout): nothing moves while songs are carried
+        self.drop_bar = QWidget(self)
         self.drop_bar.setLayout(hbox(self.to_queue, self.to_trash, spacing=12))
         self.drop_bar.layout().setContentsMargins(0, 0, 0, 0)
         self.drop_bar.hide()
-        self.root.addWidget(self.drop_bar)
-        dragdrop.bus.started.connect(lambda src: self.drop_bar.setVisible(src in (self.list, self.rack)))
+        dragdrop.bus.started.connect(self._show_drop_bar)
         dragdrop.bus.finished.connect(self.drop_bar.hide)
 
         self.play_btn.clicked.connect(lambda: actions.play(self._targets()))
@@ -110,9 +119,24 @@ class LibraryPage(Page):
         theme.changed.connect(self._retint)
         self._retint()
         self._refresh()
-        start = 1 if settings is not None and settings["library_view"] == "rack" else 0
+        start = VIEWS.index(settings["library_view"]) if settings is not None and settings["library_view"] in VIEWS else 0
         self.view_toggle.set_index(start)
         self._set_view(start, save=False)
+
+    def _show_drop_bar(self, src) -> None:
+        if src in (self.list, self.rack, self.wall):
+            self._place_drop_bar()
+            self.drop_bar.show()
+            self.drop_bar.raise_()
+
+    def _place_drop_bar(self) -> None:
+        g = self.stack.geometry()
+        self.drop_bar.setGeometry(g.left(), g.bottom() - 52 + 1, g.width(), 52)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.drop_bar.isVisible():
+            self._place_drop_bar()
 
     def _retint(self) -> None:
         self._filter_icon.setIcon(icons.icon("search", theme.color("tertiary"), 15))
@@ -120,26 +144,65 @@ class LibraryPage(Page):
     def set_playing(self, key) -> None:
         self.list.set_playing(key)
         self.rack.set_playing(key)
+        self.wall.set_playing(key)
 
     # ---- views ---------------------------------------------------------------
 
     @property
     def rack_mode(self) -> bool:
-        return self.stack.currentIndex() == 1
+        """A board of covers is showing (Disc Rack or Collage), not the list."""
+        return self.stack.currentIndex() != 0
+
+    def _board(self):
+        """The Disc Rack or the cover wall, whichever shows (or was last shown)."""
+        return self.wall if self.stack.currentIndex() == 2 else self.rack
+
+    def _panel(self):
+        return self.wall_panel if self.stack.currentIndex() == 2 else self.rack_panel
+
+    def _place(self) -> tuple[list[str], str | None]:
+        """What to carry to the next view: the chosen songs, and the first song in sight."""
+        tracks = self.list.tracks()
+        if not self.rack_mode:
+            chosen = [t.key for t in self.list.selected_tracks()]
+            top = self.list.indexAt(QPoint(8, 8)).row()
+        else:
+            board = self._board()
+            chosen = [tracks[board.selected].key] if 0 <= board.selected < len(tracks) else []
+            top = board.index_at_y(self._panel().scroll.verticalScrollBar().value())
+        return chosen, (tracks[top].key if 0 <= top < len(tracks) else None)
 
     def _set_view(self, i: int, save: bool = True) -> None:
-        """List ↔ Disc Rack, carrying the selection across."""
+        """List ↔ Disc Rack ↔ Collage: the chosen song stays chosen and in sight; with none, the new
+        view opens where the old one was."""
         if save and self.settings is not None:
-            self.settings["library_view"] = "rack" if i == 1 else "list"
-        if i == 1:
-            sel = self.list.selected_tracks()
-            self._sync_rack(sel[0].key if sel else None)
-        else:
-            j = self.rack.selected
-            if 0 <= j < len(self.list.tracks()):
-                self.list.clearSelection()
-                self.list.setCurrentIndex(self.list.model_.index(j))
+            self.settings["library_view"] = VIEWS[i]
+        chosen, top = self._place()
+        keys = [t.key for t in self.list.tracks()]
         self.stack.setCurrentIndex(i)
+        if i == 0:
+            self.list.clearSelection()
+            for n, k in enumerate(chosen):
+                if k in keys:
+                    ix = self.list.model_.index(keys.index(k))
+                    if n == 0:
+                        self.list.setCurrentIndex(ix)
+                    self.list.selectionModel().select(ix, self.list.selectionModel().SelectionFlag.Select)
+            if chosen and chosen[0] in keys:
+                self.list.scrollTo(self.list.model_.index(keys.index(chosen[0])))
+            elif top in keys:
+                self.list.scrollTo(self.list.model_.index(keys.index(top)), self.list.ScrollHint.PositionAtTop)
+        else:
+            board = self._board()
+            self._sync_rack(chosen[0] if chosen else None)
+            bar = self._panel().scroll.verticalScrollBar()
+
+            def place():
+                if board.selected >= 0:
+                    board.ensure_visible(board.selected)
+                elif top in keys:
+                    bar.setValue(board.top_of(keys.index(top)))
+            QTimer.singleShot(0, place)                 # once the board has its size
         self._update_buttons()
 
     def _rack_moved(self, src: int, dst: int) -> None:
@@ -148,11 +211,11 @@ class LibraryPage(Page):
             self.library.move(src, dst)
 
     def _sync_rack(self, keep: str | None = None) -> None:
-        self.rack_panel.sync_tracks(self.list.tracks(), self.actions.local_path_of, keep)
-        self._rack_selected(self.rack.selected)
+        self._panel().sync_tracks(self.list.tracks(), self.actions.local_path_of, keep)
+        self._rack_selected(self._board().selected)
 
     def _rack_selected(self, i: int) -> None:
-        self.rack_panel.show_track(self.list.tracks(), i)
+        self._panel().show_track(self.list.tracks(), i)
         self._update_buttons()
 
     # ---- list ----------------------------------------------------------------
@@ -161,12 +224,7 @@ class LibraryPage(Page):
         q = self.filter.text().strip().casefold()
         tracks = [t for t in self.library.tracks
                   if not q or q in t.title.casefold() or q in t.artist.casefold()]
-        selected = {t.key for t in self.list.selected_tracks()}
-        self.list.set_tracks(tracks)
-        for i, t in enumerate(tracks):
-            if t.key in selected:
-                self.list.selectionModel().select(self.list.model_.index(i),
-                                                  self.list.selectionModel().SelectionFlag.Select)
+        self.list.set_tracks(tracks)                 # (the chosen songs stay chosen)
         self.rack.reorderable = not q
         if self.rack_mode:
             self._sync_rack()
@@ -176,7 +234,7 @@ class LibraryPage(Page):
 
     def _selection(self):
         if self.rack_mode:
-            i = self.rack.selected
+            i = self._board().selected
             return [self.list.tracks()[i]] if 0 <= i < len(self.list.tracks()) else []
         return self.list.selected_tracks()
 

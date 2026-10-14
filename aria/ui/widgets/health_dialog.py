@@ -115,7 +115,7 @@ class HealthDialog(QDialog):
             self.progress.setText("Couldn’t check links")
             log.error("Link check failed: %s", exc)
 
-        tasks.run(lambda: health.check_links(tracks, providers.remote_stream, report.emit), done, failed)
+        tasks.run(lambda: health.check_links(tracks, providers.remote_stream, report.emit), done, failed, lane="bulk")
 
     # ---- display ---------------------------------------------------------------
 

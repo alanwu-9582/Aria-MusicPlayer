@@ -12,6 +12,7 @@ import urllib.parse
 
 from aria.core.models import BILIBILI, Stream, Track
 from aria.providers import http, ytdlp
+from aria.providers.errors import ProviderCapabilities
 from aria.providers.base import Provider, audio_template
 
 API = "https://api.bilibili.com"
@@ -88,6 +89,7 @@ def _split_id(track_id: str) -> tuple[str, int]:
 
 class Bilibili(Provider):
     source = BILIBILI
+    capabilities = ProviderCapabilities(search=True, metadata=True, streaming=True, download=True, playlists=True)
 
     def __init__(self):
         self.api = _Client()
@@ -183,11 +185,14 @@ class Bilibili(Provider):
             r.raise_for_status()
             total = int(r.headers.get("Content-Length") or 0)
             done = 0
+            began = time.monotonic()
             with open(tmp, "wb") as f:
                 for chunk in r.iter_content(256 * 1024):
                     f.write(chunk)
                     done += len(chunk)
                     if progress and total:
-                        progress(done / total)
+                        progress(done / total, done / max(0.001, time.monotonic() - began))
+            if total and done < total:
+                raise ConnectionError(f"connection closed after {done} of {total} bytes")
         os.replace(tmp, path)
         return path

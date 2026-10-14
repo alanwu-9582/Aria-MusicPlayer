@@ -1,32 +1,43 @@
-"""Digital Record Shelf: albums and playlists arranged by hand, opened like a record sleeve.
+"""Digital Record Shelf: everything the listener collects, arranged by hand, opened like a record sleeve.
 
-Two displays: Cover (sleeves face the room) and Spine (cases packed side by
-side; hovering pulls one half out to show its cover)."""
+Albums and playlists found online stand next to the listener's own playlists and Smart
+Collections (those stand there by themselves: new ones go in front). Any of them opens into the
+same liner-notes page — the sleeve, the credits, the track list — with what that kind allows:
+an album plays as an album, a playlist can be reordered and edited, a Smart Collection fills
+itself from its rules. Covers are picked automatically (the album's, or a mosaic of the songs'),
+or the listener chooses a picture.
+
+Two displays: Cover (sleeves face the room) and Spine (cases packed side by side; hovering
+pulls one half out to show its cover). A click opens; the small play button on a hovered sleeve
+and the right-click menu do the rest.
+"""
 
 from __future__ import annotations
 
 import logging
 import math
+import os
 import random
+import shutil
+import time
 
-from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QUrl, QVariantAnimation, Signal
-from PySide6.QtGui import (QColor, QDesktopServices, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap,
+from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal
+from PySide6.QtGui import (QColor, QDesktopServices, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLineEdit, QMenu, QStackedWidget, QVBoxLayout,
+from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLineEdit, QMenu, QStackedWidget, QVBoxLayout,
                                QWidget)
 
-from aria import providers
-from aria.core import tasks
+from aria import paths, providers
+from aria.core import smart, tasks
 from aria.core.lists import Album
 from aria.core.models import SOURCE_LABELS, Track, format_duration
 from aria.ui import icons
 from aria.ui.pages.base import TintedPage
-from aria.ui.theme import font, theme
+from aria.ui.theme import MICRO_MS, font, theme
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets import tint as tint_mod
-from aria.ui.widgets.controls import Button, hbox, label
-from aria.ui.widgets import rack as rack_mod
-from aria.ui.widgets.dialogs import confirm
+from aria.ui.widgets.controls import Button, IconButton, add_item, hbox, label, menu_below
+from aria.ui.widgets.dialogs import confirm, prompt
 from aria.ui.widgets.rack import RackItem, RackPanel, RackView
 from aria.ui.widgets.segmented import Segmented
 from aria.ui.widgets.tracklist import RowAction, TrackListView, paint_empty, plain_scroll
@@ -40,22 +51,35 @@ PLANK_H = 8
 ROW_H = COVER + PLANK_H + TEXT_H + 26
 MARGIN = 8
 COVER_PX = 360            # decoded cover height
+PLAY = 30                 # the play button on a hovered sleeve
+KIND_LABEL = {"album": "Album", "playlist": "Playlist", "smart": "Smart Collection"}
+KIND_ICON = {"album": "disc", "playlist": "list", "smart": "smart"}
+IMAGES = "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
 
-_playlists = None          # set by ShelfPage: the user's playlists, for live shelf entries
+_playlists = None          # set by ShelfPage: the listener's playlists, for their live entries
+_smart_tracks = None       # set by ShelfPage: Smart Collection id → its songs right now
+
+
+def kind_of(album: Album) -> str:
+    return "smart" if album.smart_id else ("playlist" if album.kind == "playlist" else "album")
 
 
 def tracks_of(album: Album) -> list[Track]:
-    """An album's tracks; for the user's own playlists, the playlist as it is right now."""
+    """An entry's songs; for the listener's own lists, the list as it is right now."""
     if album.playlist_id and _playlists is not None:
         p = _playlists.get(album.playlist_id)
         return list(p.tracks) if p else []
+    if album.smart_id:
+        return list(_smart_tracks(album.smart_id)) if _smart_tracks is not None else []
     return album.tracks
 
 
 def cover_sources(album: Album) -> list:
-    """One cover, or up to four song covers for a playlist without one (mosaic)."""
+    """The chosen picture; else the album's cover; else up to four song covers (a mosaic)."""
     thumbs = thumbs_mod.instance()
-    if album.cover and not album.playlist_id:
+    if album.custom_cover:
+        return [thumbs.get(str(paths.COVERS_DIR / album.custom_cover), COVER_PX)]
+    if album.cover and not album.own:
         return [thumbs.get(album.cover, COVER_PX)]
     urls: list[str] = []
     for t in tracks_of(album):
@@ -115,11 +139,10 @@ def draw_cover(p: QPainter, rect: QRectF, album: Album, radius: float = 4, dpr: 
     path.addRoundedRect(rect, radius, radius)
     p.save()
     p.setClipPath(path)
-    p.fillRect(rect, theme.color("fill_strong"))
+    p.fillRect(rect, theme.color("fill_strong"))                 # the same size, while the cover loads
     s = rect.width() * 0.3
-    icon = "list" if album.kind == "playlist" else "disc"
     p.drawPixmap(QRectF(rect.center().x() - s / 2, rect.center().y() - s / 2, s, s).toRect(),
-                 icons.pixmap(icon, theme.color("tertiary"), int(s)))
+                 icons.pixmap(KIND_ICON[kind_of(album)], theme.color("tertiary"), int(s)))
     p.restore()
 
 
@@ -162,9 +185,9 @@ def label_color(album: Album) -> QColor:
 
 
 def subtitle(album: Album) -> str:
-    if album.playlist_id:
+    if album.own:
         n = len(tracks_of(album))
-        return f"Playlist · {n} song{'s' if n != 1 else ''}"
+        return f"{KIND_LABEL[kind_of(album)]} · {n} song{'s' if n != 1 else ''}"
     return album.artist or ("Playlist" if album.kind == "playlist" else "")
 
 
@@ -172,6 +195,7 @@ class ShelfView(QWidget):
     """The shelf itself, painted: sleeves standing on planks."""
 
     open_album = Signal(str)
+    play_album = Signal(str)
     context = Signal(str, QPoint)
 
     def __init__(self, shelf):
@@ -179,9 +203,10 @@ class ShelfView(QWidget):
         self.shelf = shelf
         self.setMouseTracking(True)
         self._hover = -1
+        self._on_play = False                  # the pointer is on the hovered sleeve's play button
         self._slide = 0.0                      # 0..1 vinyl slide-out of the hovered sleeve
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(200)
+        self._anim.setDuration(MICRO_MS)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(self._on_slide)
         self._press: QPoint | None = None
@@ -203,6 +228,11 @@ class ShelfView(QWidget):
         used = cols * COVER + (cols - 1) * GAP_X
         left = MARGIN + max(0, (self.width() - 2 * MARGIN - used) // 2)
         return QRectF(left + col * (COVER + GAP_X), 16 + row * ROW_H, COVER, COVER)
+
+    def _play_rect(self, i: int) -> QRectF:
+        """The hovered sleeve's play button, in its lower right corner (it lifts with the sleeve)."""
+        r = self._rect(i).translated(0, -3 * self._slide)
+        return QRectF(r.right() - PLAY - 8, r.bottom() - PLAY - 8, PLAY, PLAY)
 
     def _index_at(self, pos) -> int:
         for i in range(len(self.shelf.albums)):
@@ -231,6 +261,9 @@ class ShelfView(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(600, 400)
 
+    def top_of(self, i: int) -> int:
+        return int(self._rect(i).top()) - 16
+
     # ---- events --------------------------------------------------------------
 
     def _on_slide(self, v) -> None:
@@ -252,6 +285,10 @@ class ShelfView(QWidget):
                 self.update()
                 return
         hover = self._index_at(pos)
+        on_play = hover >= 0 and self._play_rect(hover).contains(pos)
+        if on_play != self._on_play and hover >= 0:
+            self._on_play = on_play
+            self.update(self._dirty(hover))
         if hover != self._hover:
             old = self._hover
             self._hover = hover
@@ -259,7 +296,7 @@ class ShelfView(QWidget):
             if old >= 0:
                 self.update(self._dirty(old))
             self._anim.stop()
-            if rack_mod.reduce_motion:
+            if theme.reduce_motion:
                 self._on_slide(1.0)
             else:
                 self._anim.setStartValue(0.0)
@@ -268,6 +305,7 @@ class ShelfView(QWidget):
 
     def leaveEvent(self, e):
         self._hover = -1
+        self._on_play = False
         self.update()
 
     def mousePressEvent(self, e):
@@ -285,7 +323,9 @@ class ShelfView(QWidget):
             self.shelf.move(src, dst)
         elif self._press is not None and e.button() == Qt.MouseButton.LeftButton:
             i = self._index_at(pos)
-            if i >= 0:
+            if i >= 0 and self._play_rect(i).contains(pos):
+                self.play_album.emit(self.shelf.albums[i].id)          # the sleeve's own play button
+            elif i >= 0:
                 self.open_album.emit(self.shelf.albums[i].id)
         self._press = None
         self.update()
@@ -302,7 +342,7 @@ class ShelfView(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         albums = self.shelf.albums
         if not albums:
-            paint_empty(p, self.rect(), "disc", "Your shelf is empty", "Use “Add…” to put an album or playlist here.")
+            paint_empty(p, self.rect(), "disc", "Your shelf is empty", "Use “Add” to start a playlist or find an album.")
             return
         dpr = self.devicePixelRatioF()
         dirty = QRectF(e.rect())
@@ -345,6 +385,7 @@ class ShelfView(QWidget):
                 p.setPen(ring)
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
+                self._paint_play(p, self._play_rect(i), lift)
             text = QRectF(r.left(), base.bottom() + PLANK_H + 8, COVER, 20)
             p.setFont(font("callout", 600))
             p.setPen(theme.color("label"))
@@ -369,6 +410,17 @@ class ShelfView(QWidget):
             draw_cover(p, dr, albums[self._drag], dpr=dpr)
             p.setOpacity(1)
         p.end()
+
+    def _paint_play(self, p: QPainter, r: QRectF, lift: float) -> None:
+        """A small play button on the hovered sleeve: playing it is one click, opening it another."""
+        p.setOpacity(lift)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(20, 20, 22, 235 if self._on_play else 190))
+        p.drawRoundedRect(r, 9, 9)
+        s = 14
+        p.drawPixmap(QRectF(r.center().x() - s / 2 + 1, r.center().y() - s / 2, s, s).toRect(),
+                     icons.pixmap("play", QColor("#ffffff"), s))
+        p.setOpacity(1.0)
 
 
 class SleeveArt(QWidget):
@@ -399,14 +451,16 @@ class SleeveArt(QWidget):
 
 
 class AlbumView(QWidget):
-    """Liner notes: sleeve on the left; title, credits and the track list on the right."""
+    """Liner notes: sleeve on the left; title, credits and the track list on the right. The same
+    page for an album, a playlist or a Smart Collection — each with what it allows."""
 
     back = Signal()
 
-    def __init__(self, shelf, actions):
+    def __init__(self, shelf, actions, playlists, menu_for):
         super().__init__()
         self.shelf = shelf
         self.actions = actions
+        self.playlists = playlists
         self.album: Album | None = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -427,6 +481,7 @@ class AlbumView(QWidget):
         self.name.setWordWrap(True)
         self.artist = label("", "Title3")
         self.meta = label("", "Secondary")
+        self.meta.setWordWrap(True)
         for w in (self.kind, self.name, self.artist, self.meta):
             notes.addWidget(w)
         notes.addSpacing(10)
@@ -434,50 +489,71 @@ class AlbumView(QWidget):
         self.shuffle_btn = Button("Shuffle", icon="shuffle")
         self.download_btn = Button("Download", icon="download")
         self.open_btn = Button("Open Source", "borderless", icon="external")
-        notes.addLayout(hbox(self.play_btn, self.shuffle_btn, self.download_btn, self.open_btn, None))
+        self.more_btn = IconButton("more", "More", tone="secondary")
+        self.more_btn.clicked.connect(lambda: self.album and menu_for(self.album, self.more_btn))
+        notes.addLayout(hbox(self.play_btn, self.shuffle_btn, self.download_btn, self.open_btn, self.more_btn, None))
         notes.addStretch(1)
         top.addLayout(notes, 1)
         lay.addLayout(top)
 
         self.list = TrackListView("disc", "No tracks", "")
-        self.list.numbered = True
         saved = lambda t: t.key in actions.library  # noqa: E731
-        self.list.actions = [
-            RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.list.tracks()[r]])),
+        self._common = [
+            RowAction("queue-add", "Add to Queue", lambda r: actions.enqueue([self.list.tracks()[r]]), actions.queued),
             RowAction("heart", "Save", lambda r: actions.toggle_saved(self.list.tracks()[r]), saved),
         ]
+        self._own = self._common + [RowAction("close", "Remove from Playlist (Delete)", lambda r: self._remove([r]))]
         self.list.activated_row.connect(self._play_from)
-        self.list.context_requested.connect(
-            lambda rows, pos: actions.menu(self, [self.list.tracks()[i] for i in rows]).exec(pos))
+        self.list.context_requested.connect(self._menu)
+        self.list.moved.connect(lambda s, d: self.album and self.album.playlist_id
+                                and playlists.move(self.album.playlist_id, s, d))
+        self.list.delete_pressed.connect(self._remove)
         lay.addWidget(self.list, 1)
 
-        self.play_btn.clicked.connect(lambda: self._play_from(0))
+        self.play_btn.clicked.connect(self._play_all)
         self.shuffle_btn.clicked.connect(self._shuffle)
         self.download_btn.clicked.connect(self._download_all)
         actions.library.track_updated.connect(lambda _k: self.isVisible() and self._update_download())
         self.open_btn.clicked.connect(lambda: self.album and QDesktopServices.openUrl(QUrl(self.album.url)))
 
-    def show_album(self, a: Album) -> None:
+    def show_album(self, a: Album, top: bool = True) -> None:
+        same = self.album is not None and self.album.id == a.id
         self.album = a
         tracks = tracks_of(a)
+        kind = kind_of(a)
         self.art.set_album(a)
-        self.kind.setText("PLAYLIST" if a.kind == "playlist" else "ALBUM")
+        self.kind.setText(KIND_LABEL[kind].upper())
         self.name.setText(a.title)
         self.artist.setText(a.artist)
-        self.artist.setVisible(bool(a.artist))
+        self.artist.setVisible(bool(a.artist) and not a.own)
         total = sum(t.duration for t in tracks)
-        bits = [a.year, f"{len(tracks)} song{'s' if len(tracks) != 1 else ''}",
-                format_duration(total) if total else "",
-                "Aria" if a.playlist_id else SOURCE_LABELS.get(a.source, "")]
+        count = f"{len(tracks)} song{'s' if len(tracks) != 1 else ''}"
+        if a.smart_id:
+            sc = self.playlists.get_smart(a.smart_id)
+            rules = (" · " if sc.match == "all" else " or ").join(smart.describe(r) for r in sc.rules) if sc else ""
+            bits = [rules, count]
+        else:
+            bits = [a.year, count, format_duration(total) if total else "",
+                    "" if a.own else SOURCE_LABELS.get(a.source, "")]
         self.meta.setText(" · ".join(b for b in bits if b))
-        self.open_btn.setVisible(bool(a.url))
+        self.open_btn.setVisible(bool(a.url) and not a.own)
+        own_list = bool(a.playlist_id)
+        self.list.numbered = kind == "album"
+        self.list.reorderable = own_list
+        self.list.actions = self._own if own_list else self._common
+        self.list.empty = {"playlist": ("list", "This playlist is empty", "Right-click any song › Add to Playlist."),
+                           "smart": ("smart", "Nothing matches yet", "Songs appear here as they fit the rules."),
+                           }.get(kind, ("disc", "No tracks", "")) if a.own else ("disc", "No tracks", "")
         self.list.set_tracks(tracks)
+        for b in (self.play_btn, self.shuffle_btn):
+            b.setEnabled(bool(tracks))
         self._update_download()
-        self.list.scrollToTop()
+        if top and not same:
+            self.list.scrollToTop()
 
     def refresh(self) -> None:
         if self.album:
-            self.show_album(self.album)
+            self.show_album(self.album, top=False)
 
     def _missing(self) -> list[Track]:
         return [t for t in tracks_of(self.album) if t.source != "local" and not self.actions.local_path_of(t)] \
@@ -495,22 +571,51 @@ class AlbumView(QWidget):
             self.actions.download(missing)
             self.list.viewport().update()
 
+    def _play_all(self) -> None:
+        a = self.album
+        if a is None:
+            return
+        tracks = self.list.selected_tracks() if a.own and len(self.list.selected_tracks()) > 1 else tracks_of(a)
+        if kind_of(a) == "album":
+            self.actions.play_album(tracks, a.title, 0)          # Album Integrity: always the album's order
+        else:
+            self.actions.play_playlist(tracks)
+
     def _play_from(self, row: int) -> None:
-        """Albums play as albums: in order, gapless, nothing slipped in between."""
+        """Albums play as albums (in order, gapless, from that song); in a playlist a chosen song
+        plays on its own (the Play button plays the whole list)."""
         a = self.album
         if not a:
             return
-        tracks = tracks_of(a)
-        if a.kind == "album" and not a.playlist_id:
-            self.actions.play_album(tracks, a.title, row)       # Album Integrity: always the album's order
+        tracks = self.list.tracks()
+        if kind_of(a) == "album":
+            self.actions.play_album(tracks, a.title, row)
         else:
-            self.actions.play_playlist(tracks[row:])
+            self.actions.play(tracks[row:row + 1])
 
     def _shuffle(self) -> None:
         if self.album:
             tracks = list(tracks_of(self.album))
             random.shuffle(tracks)
             self.actions.play(tracks)
+
+    def _menu(self, rows, pos) -> None:
+        tracks = [self.list.tracks()[r] for r in rows]
+        extra = [("close", "Remove from Playlist", lambda: self._remove(rows))] if self.album and self.album.playlist_id \
+            else None
+        self.actions.menu(self, tracks, extra).exec(pos)
+
+    def _remove(self, rows) -> None:
+        a = self.album
+        if not a or not a.playlist_id or not rows:
+            return
+        tracks = [self.list.tracks()[r] for r in rows]
+        name = f"“{tracks[0].title}”" if len(tracks) == 1 else f"{len(tracks)} songs"
+        pid = a.playlist_id
+        # Plain removals are instant; the dialog only appears to offer deleting downloads.
+        self.actions.remove_with_files(self, tracks, f"Remove {name} from this playlist?",
+                                       "They stay in your Library and queue.",
+                                       lambda: self.playlists.remove(pid, rows), confirm_always=False)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key.Key_Escape:
@@ -520,12 +625,11 @@ class AlbumView(QWidget):
 
 
 class AddDialog(QDialog):
-    """Put an album or playlist on the shelf: search by name, paste a link, or pick one of your own playlists."""
+    """Put an album or playlist found online on the shelf: search by name or paste a link."""
 
-    def __init__(self, parent, shelf, playlists, toast):
+    def __init__(self, parent, shelf, toast):
         super().__init__(parent)
         self.shelf = shelf
-        self.playlists = playlists
         self.toast = toast
         self._latest = tasks.Latest()
         self.setWindowTitle(" ")
@@ -533,8 +637,8 @@ class AddDialog(QDialog):
         col = QVBoxLayout(self)
         col.setContentsMargins(22, 20, 22, 18)
         col.setSpacing(14)
-        col.addWidget(label("Add to Shelf", "Title2"))
-        self.mode = Segmented(["Find Online", "Spotify Artist", "My Playlists"])
+        col.addWidget(label("Find an Album or Playlist", "Title2"))
+        self.mode = Segmented(["Find Online", "Spotify Artist"])
         self._infos: dict[str, dict] = {}            # url → what was already loaded for it
         self.mode.changed.connect(self._switch)
         col.addWidget(self.mode)
@@ -548,40 +652,19 @@ class AddDialog(QDialog):
         self.results = TrackListView("disc", "Find an album", "Type a name and press Enter.")
         self.results.actions = [RowAction("plus", "Add to Shelf", self._add_row, lambda t: self.shelf.has(t.url))]
         self.results.activated_row.connect(self._add_row)
-        self.mine = TrackListView("list", "No playlists yet", "Create one from the sidebar.")
-        self.mine.actions = [RowAction("plus", "Add to Shelf", self._add_mine,
-                                       lambda t: self.shelf.has_playlist(t.id))]
-        self.mine.activated_row.connect(self._add_mine)
-        self.stack = QStackedWidget()
-        self.stack.addWidget(self.results)
-        self.stack.addWidget(self.mine)
-        col.addWidget(self.stack, 1)
+        col.addWidget(self.results, 1)
         done = Button("Done", "primary")
         done.clicked.connect(self.accept)
         col.addLayout(hbox(None, done))
         self.field.setFocus()
 
     def _switch(self, i: int) -> None:
-        self.stack.setCurrentIndex(1 if i == 2 else 0)
-        self.field.setVisible(i < 2)
         self.field.setPlaceholderText("Artist name, or a Spotify artist link" if i == 1
                                       else "Album or playlist name, or a link")
         self.status.setText("")
-        if i < 2 and self.field.text().strip():
+        if self.field.text().strip():
             self.results.set_tracks([])
             self.run()
-        if i == 2:
-            self.mine.set_tracks([Track(source="aria", id=p.id, title=p.name,
-                                        artist=f"{len(p.tracks)} songs",
-                                        thumbnail=next((t.thumbnail for t in p.tracks if t.thumbnail), ""))
-                                  for p in self.playlists.items])
-
-    def _add_mine(self, row: int) -> None:
-        pid = self.mine.tracks()[row].id
-        p = self.playlists.get(pid)
-        if p and self.shelf.add_playlist(p):
-            self.toast("success", f"Added “{p.name}” to the shelf")
-        self.mine.viewport().update()
 
     def run(self) -> None:
         q = self.field.text().strip()
@@ -652,17 +735,21 @@ class AddDialog(QDialog):
 
 
 class ShelfPage(TintedPage):
-    def __init__(self, shelf, playlists, actions, toast, settings):
+    def __init__(self, shelf, playlists, actions, toast, settings, smart_tracks, listening=None):
         super().__init__("Shelf", settings)
-        global _playlists
+        global _playlists, _smart_tracks
         _playlists = playlists
+        _smart_tracks = self._smart
         self.shelf = shelf
         self.playlists = playlists
         self.actions = actions
         self.toast = toast
+        self.evaluate = smart_tracks                    # SmartCollection → its songs right now
+        self._smart_cache: dict[str, list[Track]] = {}
+        self._return: tuple | None = None               # where the shelf was when an entry opened
 
-        self.add_btn = Button("Add…", "borderless", icon="plus")
-        self.add_btn.clicked.connect(self.add_album)
+        self.add_btn = Button("Add", "borderless", icon="plus")
+        self.add_btn.clicked.connect(self._add_menu)
         self.header.addWidget(self.add_btn)
         self.count = label("", "Caption")
         self.header.addWidget(self.count)
@@ -670,14 +757,14 @@ class ShelfPage(TintedPage):
         self.header.addWidget(self.display)
 
         self.stack = QStackedWidget()
-        scroll = plain_scroll()
+        self.scroll = plain_scroll()
         self.view = ShelfView(shelf)
-        scroll.setWidget(self.view)
-        self.detail = AlbumView(shelf, actions)
+        self.scroll.setWidget(self.view)
+        self.detail = AlbumView(shelf, actions, playlists, self._entry_menu)
         self.spines = RackView(spine_w=40, case_h=190, reveal=0.55)
         self.spine_panel = RackPanel(self.spines, ("disc", "Your shelf is empty",
-                                                   "Use “Add…” to put an album or playlist here."))
-        self.stack.addWidget(scroll)
+                                                   "Use “Add” to start a playlist or find an album."), detail=False)
+        self.stack.addWidget(self.scroll)
         self.stack.addWidget(self.detail)
         self.stack.addWidget(self.spine_panel)
         self.root.addWidget(self.stack, 1)
@@ -693,18 +780,41 @@ class ShelfPage(TintedPage):
         self.stack.setCurrentIndex(self._view)
 
         self.view.open_album.connect(self.open_album)
+        self.view.play_album.connect(lambda aid: self.shelf.get(aid) and self.play_entry(self.shelf.get(aid)))
         self.view.context.connect(self._menu)
         self.detail.back.connect(self.close_album)
-        shelf.changed.connect(self._update_count)
-        shelf.changed.connect(lambda: self._view == 2 and self._sync_spines())
-        actions.library.track_updated.connect(lambda _k: self._view == 2 and self._sync_spines())
-        playlists.changed.connect(lambda: shelf.sync_playlists(playlists))
+        shelf.changed.connect(self._shelf_changed)
         playlists.playlist_changed.connect(self._playlist_edited)
+        # Smart Collections follow the library and play stats (coalesced)
+        self._smart_timer = QTimer(self, singleShot=True, interval=400)
+        self._smart_timer.timeout.connect(self._smart_changed)
+        actions.library.changed.connect(self._smart_timer.start)
+        actions.library.track_updated.connect(lambda _k: self._smart_timer.start())
+        actions.library.track_updated.connect(lambda _k: self._view == 2 and self._sync_spines())
+        if listening is not None:
+            listening.stats_changed.connect(self._smart_timer.start)
         thumbs_mod.instance().ready.connect(lambda _k: self._update_tint())
-        shelf.sync_playlists(playlists)
         self._update_count()
         if self._view == 2:
             self._sync_spines()
+
+    # ---- Smart Collections -------------------------------------------------------
+
+    def _smart(self, sid: str) -> list[Track]:
+        """A Smart Collection's songs (worked out once until the library or the stats change)."""
+        hit = self._smart_cache.get(sid)
+        if hit is None:
+            sc = self.playlists.get_smart(sid)
+            hit = self._smart_cache[sid] = self.evaluate(sc) if sc else []
+        return hit
+
+    def _smart_changed(self) -> None:
+        self._smart_cache.clear()
+        self.view.update()
+        if self._view == 2:
+            self._sync_spines()
+        if self.stack.currentIndex() == 1 and self.detail.album and self.detail.album.smart_id:
+            self.detail.refresh()
 
     # ---- displays ------------------------------------------------------------
 
@@ -720,7 +830,7 @@ class ShelfPage(TintedPage):
         dpr = self.devicePixelRatioF()
         items = []
         for a in self.shelf.albums:
-            kind = "playlist" if a.kind == "playlist" else "album"
+            kind = kind_of(a)
             tracks = tracks_of(a)
             have = sum(1 for t in tracks if self.actions.local_path_of(t))
             offline = "full" if tracks and have == len(tracks) else "partial" if have else "none"
@@ -730,35 +840,71 @@ class ShelfPage(TintedPage):
         keep = self.spines.items[self.spines.selected].key if 0 <= self.spines.selected < len(self.spines.items) else None
         self.spines.set_items(items, keep)
 
-    def _playlist_edited(self, pid: str) -> None:
+    def _shelf_changed(self) -> None:
+        self._update_count()
+        if self._view == 2:
+            self._sync_spines()
+        a = self.detail.album
+        if self.stack.currentIndex() == 1 and a is not None:
+            if self.shelf.get(a.id) is None:
+                self.close_album()                    # it came off the shelf (a playlist was deleted)
+            else:
+                self.detail.show_album(self.shelf.get(a.id), top=False)    # renamed, or a new cover
+                self._update_tint()
+
+    def _playlist_edited(self, list_id: str) -> None:
+        if self.playlists.get_smart(list_id):
+            self._smart_cache.pop(list_id, None)      # its rules changed
         self.view.update()
         if self._view == 2:
             self._sync_spines()
-        if self.stack.currentIndex() == 1 and self.detail.album and self.detail.album.playlist_id == pid:
+        a = self.detail.album
+        if self.stack.currentIndex() == 1 and a and list_id in (a.playlist_id, a.smart_id):
             self.detail.refresh()
 
     def _update_count(self) -> None:
         n = len(self.shelf.albums)
         self.count.setText(f"{n:,} item{'s' if n != 1 else ''}")
 
+    # ---- opening -------------------------------------------------------------
+
     def open_album(self, aid: str) -> None:
         a = self.shelf.get(aid)
         if not a:
             return
+        if self.stack.currentIndex() != 1:
+            # remember the place on the shelf: back goes there, not to the top
+            bar = (self.scroll if self._view == 0 else self.spine_panel.scroll).verticalScrollBar()
+            self._return = (self._view, bar.value(), aid)
         self.detail.show_album(a)
         self.stack.setCurrentIndex(1)
-        self.add_btn.hide()
-        self.count.hide()
-        self.display.hide()
+        for w in (self.add_btn, self.count, self.display):
+            w.hide()
         self._update_tint()
         self.detail.setFocus()
 
+    def open_list(self, list_id: str) -> None:
+        """Open one of the listener's playlists or Smart Collections."""
+        self.shelf.sync_playlists(self.playlists)
+        a = self.shelf.entry_for(list_id)
+        if a is not None:
+            self.open_album(a.id)
+
     def close_album(self) -> None:
         self.stack.setCurrentIndex(self._view)
-        self.add_btn.show()
-        self.count.show()
-        self.display.show()
+        for w in (self.add_btn, self.count, self.display):
+            w.show()
         self.set_hue(None)
+        back, self._return = self._return, None
+        if back is not None and back[0] == self._view:
+            view, value, aid = back
+            bar = (self.scroll if view == 0 else self.spine_panel.scroll).verticalScrollBar()
+            QTimer.singleShot(0, lambda: bar.setValue(value))
+            if view == 2:
+                keys = [it.key for it in self.spines.items]
+                if aid in keys:
+                    self.spines.select(keys.index(aid), emit=False)
+        (self.view if self._view == 0 else self.spines).setFocus()
 
     def _update_tint(self) -> None:
         if self.stack.currentIndex() == 1 and self.detail.album:
@@ -766,35 +912,135 @@ class ShelfPage(TintedPage):
             if pm is not None:
                 self.set_hue(tint_mod.hue_of(pm) if not pm.isNull() else None)
 
+    # ---- actions -----------------------------------------------------------------
+
+    def play_entry(self, a: Album) -> None:
+        tracks = tracks_of(a)
+        if not tracks:
+            self.toast("info", "Nothing to play yet")
+        elif kind_of(a) == "album":
+            self.actions.play_album(tracks, a.title)
+        else:
+            self.actions.play_playlist(tracks)
+
+    def _add_menu(self) -> None:
+        m = QMenu(self)
+        add_item(m, "list", "New Playlist…", self.new_playlist)
+        sub = m.addMenu(icons.icon("smart", theme.color("label"), 16), "New Smart Collection")
+        for i, (name, _rules) in enumerate(smart.PRESETS):
+            sub.addAction(name, lambda i=i: self.new_smart(i))
+        sub.addSeparator()
+        sub.addAction("Custom Rules…", lambda: self.new_smart(None))
+        m.addSeparator()
+        add_item(m, "search", "Find an Album or Playlist…", self.add_album)
+        menu_below(self.add_btn, m)
+
+    def new_playlist(self) -> None:
+        name = prompt(self, "New Playlist", "Playlist name", "Create")
+        if name:
+            p = self.playlists.create(name)
+            self.open_list(p.id)
+
+    def new_smart(self, preset: int | None = None) -> None:
+        """A Smart Collection from a preset, or (None) from the rule editor."""
+        if preset is not None:
+            name, rules = smart.PRESETS[preset]
+            sc = smart.SmartCollection(name=name, rules=[dict(r) for r in rules])
+        else:
+            from aria.ui.widgets.smart_dialog import edit_smart
+            sc = edit_smart(self, None, lambda c: len(self.evaluate(c)))
+            if sc is None:
+                return
+        self.playlists.add_smart(sc)
+        self.open_list(sc.id)
+
+    def add_album(self) -> None:
+        AddDialog(self, self.shelf, self.toast).exec()
+
     def _menu(self, aid: str, pos: QPoint) -> None:
         a = self.shelf.get(aid)
-        if not a:
-            return
+        if a is not None:
+            self._entry_menu(a, pos, opened=False)
+
+    def _entry_menu(self, a: Album, where, opened: bool = True) -> None:
+        """Right-click on a sleeve, or ⋯ on its open page: play first, then what this kind allows."""
         m = QMenu(self)
-        c = theme.color("label")
-        is_album = a.kind == "album" and not a.playlist_id
-        m.addAction(icons.icon("play", c, 16), "Play",
-                    lambda: self.actions.play_album(tracks_of(a), a.title) if is_album
-                    else self.actions.play_playlist(tracks_of(a)))
-        m.addAction(icons.icon("queue-add", c, 16), "Add to Queue", lambda: self.actions.enqueue(tracks_of(a)))
-        m.addAction(icons.icon("disc", c, 16), "Open", lambda: self.open_album(a.id))
+        if not opened:
+            add_item(m, "play", "Play", lambda: self.play_entry(a))
+            add_item(m, "queue-add", "Add to Queue", lambda: self.actions.enqueue(tracks_of(a)), bool(tracks_of(a)))
+            add_item(m, "disc", "Open", lambda: self.open_album(a.id))
+            m.addSeparator()
+        if a.playlist_id:
+            add_item(m, "pencil", "Rename…", lambda: self.rename(a))
+        elif a.smart_id:
+            add_item(m, "smart", "Edit Rules…", lambda: self.edit_rules(a))
+        add_item(m, "image", "Choose Cover…", lambda: self.choose_cover(a))
+        if a.custom_cover:
+            add_item(m, "undo", "Use Automatic Cover", lambda: self.shelf.set_cover(a.id, ""))
         m.addSeparator()
-        m.addAction(icons.icon("trash", c, 16), "Remove from Shelf", lambda: self._remove(a))
-        m.exec(pos)
+        if a.playlist_id:
+            add_item(m, "trash", "Delete Playlist…", lambda: self.delete_playlist(a.playlist_id))
+        elif a.smart_id:
+            add_item(m, "trash", "Delete Collection…", lambda: self.delete_smart(a.smart_id))
+        else:
+            add_item(m, "trash", "Remove from Shelf", lambda: self._remove(a))
+        if isinstance(where, QWidget):
+            menu_below(where, m)
+        else:
+            m.exec(where)
+
+    def rename(self, a: Album) -> None:
+        p = self.playlists.get(a.playlist_id)
+        if p:
+            name = prompt(self, "Rename Playlist", "Playlist name", "Save", p.name)
+            if name:
+                self.playlists.rename(p.id, name)
+
+    def edit_rules(self, a: Album) -> None:
+        from aria.ui.widgets.smart_dialog import edit_smart
+        sc = self.playlists.get_smart(a.smart_id)
+        if not sc:
+            return
+        edited = edit_smart(self, sc, lambda c: len(self.evaluate(c)))
+        if edited:
+            sc.name, sc.rules, sc.match, sc.scope = edited.name, edited.rules, edited.match, edited.scope
+            self.playlists.update_smart(sc)
+
+    def delete_playlist(self, pid: str) -> None:
+        p = self.playlists.get(pid)
+        if p:
+            self.actions.remove_with_files(self, list(p.tracks), f"Delete “{p.name}”?",
+                                           "Songs stay in your Library and queue.",
+                                           lambda: self.playlists.delete(pid))
+
+    def delete_smart(self, sid: str) -> None:
+        sc = self.playlists.get_smart(sid)
+        if sc and confirm(self, f"Delete “{sc.name}”?", "Only the collection goes; its songs stay where they are.",
+                          "Delete", danger=True):
+            self.playlists.delete_smart(sid)
+
+    def choose_cover(self, a: Album) -> None:
+        """A picture of the listener's own for this entry (copied into Aria's data, so it stays)."""
+        src, _ = QFileDialog.getOpenFileName(self, "Choose Cover", "", IMAGES)
+        if not src:
+            return
+        if QImage(src).isNull():
+            self.toast("warning", "That picture couldn’t be read")
+            return
+        paths.COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"{a.id}-{int(time.time())}{os.path.splitext(src)[1].lower() or '.png'}"
+        try:
+            shutil.copyfile(src, paths.COVERS_DIR / name)
+        except OSError as exc:
+            log.error("Couldn’t copy the cover: %s", exc)
+            self.toast("danger", "Couldn’t save that picture")
+            return
+        self.shelf.set_cover(a.id, name)
 
     def _remove(self, a: Album) -> None:
         if confirm(self, f"Remove “{a.title}” from the shelf?",
                    "It only comes off the shelf; your Library and playlists aren’t touched.", "Remove", danger=True):
             self.shelf.remove(a.id)
-
-    def add_album(self) -> None:
-        AddDialog(self, self.shelf, self.playlists, self.toast).exec()
-
-    def put_playlist(self, pid: str) -> None:
-        p = self.playlists.get(pid)
-        if p:
-            added = self.shelf.add_playlist(p)
-            self.toast("success" if added else "info", f"Added “{p.name}” to the shelf" if added else "Already on the shelf")
 
     def on_shown(self) -> None:
         if self.stack.currentIndex() != 1:

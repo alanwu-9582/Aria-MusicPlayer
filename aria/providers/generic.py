@@ -6,6 +6,7 @@ import re
 
 from aria.core.models import SOUNDCLOUD, WEB, Stream, Track
 from aria.providers import ytdlp
+from aria.providers.errors import ProviderCapabilities
 from aria.providers.base import Provider, audio_template
 
 
@@ -34,6 +35,7 @@ class YtDlpProvider(Provider):
 
 class SoundCloud(YtDlpProvider):
     source = SOUNDCLOUD
+    capabilities = ProviderCapabilities(search=True, metadata=True, streaming=True, download=True, playlists=True)
 
     def match(self, url: str) -> bool:
         return bool(re.search(r"soundcloud\.com/", url))
@@ -49,6 +51,7 @@ class SoundCloud(YtDlpProvider):
 
 class Web(YtDlpProvider):
     source = WEB
+    capabilities = ProviderCapabilities(metadata=True, streaming=True, download=True)
 
     def match(self, url: str) -> bool:
         return url.startswith(("http://", "https://"))

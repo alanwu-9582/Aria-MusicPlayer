@@ -118,6 +118,9 @@ class DropZone(QFrame):
         fill.setAlphaF(0.16 if self._over else 0.06)
         border = QColor(tone)
         border.setAlphaF(0.9 if self._over else 0.35)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(theme.color("window"))            # solid: it may lie over other content
+        p.drawRoundedRect(r, 10, 10)
         p.setPen(border)
         p.setBrush(fill)
         p.drawRoundedRect(r, 10, 10)

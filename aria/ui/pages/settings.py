@@ -242,9 +242,10 @@ class SettingsPage(Page):
         lyr.pair(self.align_streams)
         self.lyrics_trans = self._toggle("Lyrics Translation", "lyrics_translation",
                                          "Show a line's translation under it, when the lyrics have one")
-        self.lyrics_words = self._toggle("Word-by-Word Lyrics", "lyrics_words",
-                                         "Fill the sung line word by word, when the lyrics are timed per word")
-        lyr.pair(self.lyrics_trans, self.lyrics_words)
+        self.words_all = self._toggle("Word-by-Word Everything", "lyrics_words_all",
+                                      "Line-synced lyrics too: the song is analysed (a streamed one through a "
+                                      "temporary copy) so every word is filled as it's sung")
+        lyr.pair(self.lyrics_trans, self.words_all)
         from aria.ui.widgets.dialogs import confirm
         from aria.ui.widgets.models_panel import ModelsPanel
         self.models = ModelsPanel(settings, window.models, confirm, window.toast, self._sync_align)
@@ -258,8 +259,12 @@ class SettingsPage(Page):
         self.appearance.changed.connect(lambda i: window.set_appearance(APPEARANCES[i]))
         look.field("Theme", self.appearance)
         self.smart = self._toggle("Smart Artwork", "smart_artwork", "Tint the background from the cover")
-        self.motion = self._toggle("Reduce Motion", "reduce_motion", "Hover effects change instantly")
+        self.motion = self._toggle("Reduce Motion", "reduce_motion", "Things change in place instead of moving")
         look.pair(self.smart, self.motion)
+        self.centre = Segmented(["2 × 2", "3 × 3", "4 × 4"], compact=True)
+        self.centre.set_index(max(0, min(2, int(settings["collage_centre"] or 2) - 2)))
+        self.centre.changed.connect(lambda i: self._set("collage_centre", i + 2))
+        look.field("Collage Now Playing", self.centre)
 
         # ---- window
         win = self._group("Window")
@@ -360,6 +365,8 @@ class SettingsPage(Page):
             self.lyrics_align.setChecked(False)
         if hasattr(self, "align_streams"):
             self.align_streams.setEnabled(ready and self.lyrics_align.isChecked())
+        if hasattr(self, "words_all"):
+            self.words_all.setEnabled(ready)                      # it needs a speech model too
 
     def _set(self, key: str, value) -> None:
         self.settings[key] = value

@@ -1,5 +1,6 @@
-"""Sidebar (§6.1): 212 expanded / 60 collapsed, grouped items 32 high, playlists,
-collapse + appearance at the bottom. Only the item list scrolls (§6.5)."""
+"""Sidebar (§6.1): 212 expanded / 60 collapsed, grouped items 32 high, collapse + appearance
+at the bottom. Only the item list scrolls (§6.5). Playlists and Smart Collections live on the
+Shelf, with the albums."""
 
 from __future__ import annotations
 
@@ -123,9 +124,6 @@ class SidebarItem(QAbstractButton):
 
 class Sidebar(QFrame):
     page_selected = Signal(int)
-    playlist_selected = Signal(str)
-    playlist_context = Signal(str, object)      # id, global pos
-    new_playlist = Signal()
     collapse_toggled = Signal(bool)
     appearance_clicked = Signal()
     quit_clicked = Signal()
@@ -174,21 +172,6 @@ class Sidebar(QFrame):
                 self.items.append(item)
                 self.body.addWidget(item)
 
-        # playlists
-        self.body.addSpacing(12)
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        self.pl_title = self._section("Playlists", add_to_body=False)
-        self.add_btn = IconButton("plus", "New Playlist or Smart Collection", size=22, icon_size=14, tone="secondary")
-        self.add_btn.clicked.connect(self.new_playlist)
-        head.addWidget(self.pl_title, 1)
-        head.addWidget(self.add_btn)
-        head.addSpacing(6)
-        self.body.addLayout(head)
-        self.pl_box = QVBoxLayout()
-        self.pl_box.setSpacing(2)
-        self.body.addLayout(self.pl_box)
-        self.pl_items: dict[str, SidebarItem] = {}
         self.body.addStretch(1)
 
         bottom = QHBoxLayout()
@@ -214,55 +197,24 @@ class Sidebar(QFrame):
         outer.addLayout(bottom)
         self.setFixedWidth(EXPANDED)
 
-    def _section(self, title: str, add_to_body: bool = True) -> QLabel:
+    def _section(self, title: str) -> QLabel:
         lbl = label(title, "SectionTitle")
         lbl.setContentsMargins(10, 4, 0, 4)
         self.titles.append(lbl)
-        if add_to_body:
-            self.body.addWidget(lbl)
+        self.body.addWidget(lbl)
         return lbl
 
     def set_logo(self, pixmap) -> None:
         self.logo.setPixmap(pixmap)
         self.logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-    # ---- playlists -------------------------------------------------------------
-
-    def set_playlists(self, playlists: list[tuple[str, str, str]]) -> None:
-        """(id, name, icon) for every playlist and Smart Collection."""
-        current = next((pid for pid, it in self.pl_items.items() if it.isChecked()), None)
-        for it in self.pl_items.values():
-            it.deleteLater()
-        self.pl_items.clear()
-        for pid, name, icon in playlists:
-            it = SidebarItem(icon, name)
-            it.collapsed = self.collapsed
-            it.setToolTip(name if self.collapsed else "")
-            it.setChecked(pid == current)
-            it.clicked.connect(lambda _c=False, p=pid: self.select_playlist(p, emit=True))
-            it.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            it.customContextMenuRequested.connect(
-                lambda pos, p=pid, w=it: self.playlist_context.emit(p, w.mapToGlobal(pos)))
-            self.pl_items[pid] = it
-            self.pl_box.addWidget(it)
-
     # ---- selection -------------------------------------------------------------
 
     def select(self, index: int, emit: bool = False) -> None:
         for i, item in enumerate(self.items):
             item.setChecked(i == index)
-        for it in self.pl_items.values():
-            it.setChecked(False)
         if emit:
             self.page_selected.emit(index)
-
-    def select_playlist(self, pid: str, emit: bool = False) -> None:
-        for item in self.items:
-            item.setChecked(False)
-        for p, it in self.pl_items.items():
-            it.setChecked(p == pid)
-        if emit:
-            self.playlist_selected.emit(pid)
 
     # ---- appearance ------------------------------------------------------------
 
@@ -272,8 +224,7 @@ class Sidebar(QFrame):
         self.brand.setVisible(not collapsed)
         for lbl in self.titles:
             lbl.setVisible(not collapsed)
-        self.add_btn.setVisible(not collapsed)
-        for item in self.items + list(self.pl_items.values()):
+        for item in self.items:
             item.collapsed = collapsed
             item.setToolTip(item._tip if collapsed else "")
             item.update()
@@ -298,7 +249,7 @@ class Sidebar(QFrame):
         body.resize(self.scroll.viewport().width(), body.sizeHint().height()
                     if body.height() < body.sizeHint().height() else body.height())
         self.body.setGeometry(body.rect())
-        for item in self.items + list(self.pl_items.values()):
+        for item in self.items:
             item.update()
 
     def showEvent(self, e):

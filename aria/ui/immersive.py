@@ -30,7 +30,7 @@ from aria.core.models import format_duration
 from aria.core.player import LOADING, PLAYING
 from aria.ui import icons
 from aria.ui.collage import CollageView
-from aria.ui.theme import pixel_font as _font, radius, thin_bar as bar
+from aria.ui.theme import STANDARD_MS, pixel_font as _font, radius, thin_bar as bar
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets import tint as tint_mod
 from aria.ui.widgets.thumbs import ART_HEIGHT, artwork_urls
@@ -195,7 +195,7 @@ class Controls(QWidget):
         self.effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.effect)
         self.fade = QPropertyAnimation(self.effect, b"opacity", self)
-        self.fade.setDuration(260)
+        self.fade.setDuration(STANDARD_MS)
         self.fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.fade.finished.connect(self._faded)
 
@@ -255,6 +255,7 @@ class ImmersiveView(QWidget):
 
         self.actions = actions
         self.collage = CollageView(self, playback, actions)
+        self.collage.centre_cells = max(2, min(4, int(settings["collage_centre"] or 2)))
         self.collage.hide()
         self.collage_play = GlassButton("pause", "Play / Pause", 32, 15)     # on the middle square's foot
         self.collage_play.setParent(self.collage)
@@ -303,6 +304,10 @@ class ImmersiveView(QWidget):
             self.setScreen(screen)
             self.setGeometry(screen.geometry())
         self._sync_saved()
+        # Ready before the first frame: the cover and title (already loaded for Now Playing) are
+        # drawn at this size and the lyrics already sit at the sung line — nothing loads in view.
+        self._copy_lyrics()                          # (lays everything out too)
+        self._prepare()
         self.showFullScreen()
         self.raise_()
         self.activateWindow()
@@ -530,9 +535,14 @@ class ImmersiveView(QWidget):
         self.collage_play.setVisible(collage and not self.collage.busy)
         if lyr:
             # Collage: sized once to the middle square (never to a line), so lines fit and don't jump
-            self.lyrics.scale = max(18, min(34, round(self.collage.centre.height() / 15))) if collage else 27
+            # a size where a sung line usually fits one row (long ones split in two, see LyricsView)
+            self.lyrics.px = max(17, min(28, round(self.collage.centre.height() / 19))) if collage \
+                else max(18, min(36, round(self.height() / 34)))
             self.lyrics.set_centered(False)
             self.lyrics.setGeometry(boxes["lyrics"])
+            self.lyrics._relayout()                       # the type size may have changed without a resize
+            self.lyrics._snap()
+            self.lyrics.update()
         self.controls.set_pill(collage)
         hint = self.controls.sizeHint()
         self.controls.setGeometry((self.width() - hint.width()) // 2, self.height() - 108, hint.width(), hint.height())
@@ -654,6 +664,19 @@ class ImmersiveView(QWidget):
         p.end()
         return out
 
+    def _prepare(self) -> None:
+        """Paint the backdrop and the front for this song and size now (not on the first frame)."""
+        if self.layout_mode == GALLERY or self.width() <= 0:
+            return
+        bkey = (self.pb.current.key if self.pb.current else None, self.width(), self.height(),
+                self._cover() is not None)
+        if self._back is None or bkey != self._back_key:
+            self._back, self._back_key = self._backdrop(), bkey
+        fkey = (self.pb.current.key if self.pb.current else None, self.width(), self.height(), self.layout_mode,
+                self._has_lyrics(), self._cover() is not None)
+        if self._static is None or fkey != self._static_key:
+            self._static, self._static_key = self._front(), fkey
+
     def paintEvent(self, e):
         gallery_mode = self.layout_mode == GALLERY
         p = QPainter(self)
@@ -674,16 +697,8 @@ class ImmersiveView(QWidget):
             p.fillRect(r, QColor(8, 8, 10))                 # between the squares; they paint the rest
             p.end()
             return
-        else:
-            bkey = (self.pb.current.key if self.pb.current else None, self.width(), self.height(),
-                    self._cover() is not None)
-            if self._back is None or bkey != self._back_key:
-                self._back, self._back_key = self._backdrop(), bkey
-            blit(self._back)
-        fkey = (self.pb.current.key if self.pb.current else None, self.width(), self.height(), self.layout_mode,
-                self._has_lyrics(), self._cover() is not None)
-        if self._static is None or fkey != self._static_key:
-            self._static, self._static_key = self._front(), fkey
+        self._prepare()
+        blit(self._back)
         blit(self._static)
         # thin progress line with the times at its ends
         pr = self._progress_rect()

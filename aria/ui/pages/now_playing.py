@@ -1,5 +1,9 @@
 """Now playing: artwork canvas on the left, queue / recommendations / history / lyrics on the right (§6.3).
 
+Under the cover the song leads: its name, then the artist, then one quiet line for the rest
+(version, source, tempo). The buttons beside them keep their places whatever the name's length
+or the cover's shape. Recommendations wait in their own tab (For You) until asked for.
+
 New tools live inside these tabs rather than on pages of their own:
 - Queue: the listening timer (Time-Fitted Playlist) and album mode status.
 - For You: the Discovery dial (familiar ↔ unexpected).
@@ -63,18 +67,25 @@ class NowPlayingPage(TintedPage):
         self.art = Artwork(tint=self.tint)
         self.art.hue_changed.connect(self.set_hue)
         lv.addWidget(self.art, 1)
-        self.song = ElidedLabel("Title2")
-        self.artist = ElidedLabel("Secondary")
+        self.song = ElidedLabel("NowTitle")
+        self.artist = ElidedLabel("NowArtist")
+        self.detail = ElidedLabel("Tertiary")          # version · source · BPM: one quiet line
         self.open_btn = IconButton("external", "Open Source", tone="secondary")
         self.open_btn.clicked.connect(lambda: self.pb.current and self.actions.open_source(self.pb.current))
         info = QVBoxLayout()
-        info.setSpacing(2)
+        info.setSpacing(1)
         info.addWidget(self.song)
         info.addWidget(self.artist)
+        info.addSpacing(2)
+        info.addWidget(self.detail)
         self.source = Segmented(["Stream", "Local"], compact=True)
         self.source.changed.connect(lambda i: self.pb.switch_source(i == 1))
         self.playlist_btn = IconButton("list", "Add to Playlist", tone="secondary")
         self.immersive_btn = IconButton("expand", "Immersive Mode (F11)", tone="secondary")
+        for w in (self.source, self.playlist_btn, self.open_btn):
+            keep = w.sizePolicy()
+            keep.setRetainSizeWhenHidden(True)       # coming and going never moves the buttons beside it
+            w.setSizePolicy(keep)
         row = hbox(info, self.source, self.playlist_btn, self.immersive_btn, self.open_btn, spacing=12)
         row.setStretch(0, 1)
         lv.addLayout(row)
@@ -151,6 +162,11 @@ class NowPlayingPage(TintedPage):
         self._temp_busy: str | None = None                        # the one being aligned right now
         self._clear_temp_audio(everything=True)                   # left over from last time
         self._lyrics_ticket = tasks.Latest()
+        from aria.core.word_timing import WordTimer
+        self.words = WordTimer(settings)                          # Word-by-Word Everything
+        self.words.done.connect(self._words_done)
+        self.words.busy_changed.connect(lambda _k: self._update_toolbar())
+        self._word_copy: str | None = None                        # a song being copied to time its words
         self._lyrics_timer = QTimer(self)
         self._lyrics_timer.setSingleShot(True)
         self._lyrics_timer.setInterval(600)
@@ -415,6 +431,7 @@ class NowPlayingPage(TintedPage):
         t = self.pb.current
         self.source.setVisible(bool(t and t.local_path and t.source != "local"))
         self.source.set_index(1 if self.pb.playing_local else 0)
+        self.show_bpm()
 
     def _show_tab(self, i: int) -> None:
         self.stack.setCurrentIndex(i)
@@ -434,6 +451,8 @@ class NowPlayingPage(TintedPage):
             text = lyr.label if lyr else ""
             if lyr is not None and not lyr.synced and self.pb.current and self._aligning == self.pb.current.key:
                 text += f" · {self._align_note}"
+            elif lyr is not None and self.pb.current and self.pb.current.key in (self.words.busy, self._word_copy):
+                text += " · Timing words…"
         elif tab == QUEUE and pb.measuring[1]:
             done, total = pb.measuring
             text = f"Measuring tempo · {done} / {total}"
@@ -507,6 +526,8 @@ class NowPlayingPage(TintedPage):
                 self._update_toolbar()
                 if found is not None and not found.synced:
                     self._maybe_align(t, found, ticket)
+                elif found is not None:
+                    self._refine_words(t, found, ticket)
 
         def failed(_e):
             if self._lyrics_ticket.is_current(ticket):
@@ -514,6 +535,70 @@ class NowPlayingPage(TintedPage):
                 self._update_toolbar()
 
         tasks.run(lambda: lyrics_mod.fetch(t, enhanced, self.pb.recommender, force=force), done, failed)
+
+    # ---- Word-by-Word Everything ------------------------------------------------------
+
+    def refine_words(self) -> None:
+        """The setting was just turned on: time the playing song's words now."""
+        t, lyr = self.pb.current, self.lyrics.lyrics
+        if t is not None and lyr is not None and self.lyrics.state == "ready":
+            self._refine_words(t, lyr, self._lyrics_ticket.current())
+
+    def _refine_words(self, t, lyr, ticket) -> None:
+        """Line-synced lyrics: word times from earlier, or estimated now from the song's file (a
+        streamed song through a temporary copy, deleted once the song is over)."""
+        import os
+        if not self.words.wanted(lyr):
+            return
+        known = lyrics_mod.estimated_words(t, lyr)
+        if known is not None:
+            self._show_words(known)
+            return
+        if t.local_path and os.path.exists(t.local_path):
+            self.words.request(t, lyr, t.local_path, front=True)
+            return
+        if t.source == "local":
+            return
+        copy = next((p for p, k in self._temp_audio.items() if k == t.key and os.path.exists(p)), None)
+        if copy:
+            self.words.request(t, lyr, copy, front=True, temp=True)
+            return
+        from aria import paths, providers
+        self._word_copy = t.key
+        self._update_toolbar()
+
+        def done(path):
+            self._word_copy = None
+            self._temp_audio[path] = t.key
+            if self.pb.current is not None and self.pb.current.key == t.key:
+                self.words.request(t, lyr, path, front=True, temp=True)
+            else:
+                self._clear_temp_audio()
+            self._update_toolbar()
+
+        def failed(e):
+            self._word_copy = None
+            lyr_log.warning("Couldn’t copy “%s” to time its words: %s", t.title, e)
+            self._update_toolbar()
+
+        tasks.run(lambda: providers.download_to(t, paths.CACHE_DIR / "align_audio"), done, failed, lane="download")
+
+    def _words_done(self, key: str, merged) -> None:
+        cur = self.lyrics.lyrics
+        if merged is None or self.pb.current is None or self.pb.current.key != key or cur is None:
+            self._update_toolbar()
+            self._clear_temp_audio()
+            return
+        if [s for _t, s in cur.lines] == [s for _t, s in merged.lines]:
+            self._show_words(merged)
+        self._clear_temp_audio()
+
+    def _show_words(self, merged) -> None:
+        t = self.pb.current
+        merged.offset = self.lyric_prefs.offset(t.key) if t else 0.0
+        self.lyrics.set_state("ready", merged)
+        self.lyrics.set_position(self.pb.player.position())
+        self._update_toolbar()
 
     def _choose_lyrics(self) -> None:
         t = self.pb.current
@@ -626,7 +711,7 @@ class NowPlayingPage(TintedPage):
             self._update_toolbar()
             self._clear_temp_audio()
 
-        tasks.run(work, finish, lambda e: finish(None))
+        tasks.run(work, finish, lambda e: finish(None), lane="bulk")
 
     def _align_from_download(self, t, plain, ticket) -> None:
         """A streamed song: download a temporary copy while it plays, align that, and delete the
@@ -654,7 +739,7 @@ class NowPlayingPage(TintedPage):
             self._update_toolbar()
 
         lyr_log.info("Downloading “%s” to align its lyrics", t.title)
-        tasks.run(lambda: providers.download_to(t, folder), done, failed)
+        tasks.run(lambda: providers.download_to(t, folder), done, failed, lane="download")
 
     def _clear_temp_audio(self, everything: bool = False) -> None:
         """Delete the temporary copies of songs that are over (the playing song keeps its copy until
@@ -698,20 +783,24 @@ class NowPlayingPage(TintedPage):
     # ---- updates -------------------------------------------------------------
 
     def show_bpm(self) -> None:
-        """The playing song's line, with its BPM as quiet extra detail when Tempo Flow knows it."""
+        """The quiet line under the artist: the version, where it plays from, and the BPM when
+        Tempo Flow knows it."""
         t = self.pb.current
         if not t:
-            self.artist.set_full_text("")
+            self.detail.set_full_text("")
             return
-        bits = [identity.display(t)[1], t.source_label]
+        _title, _artist, tag = identity.display_parts(t)
+        bits = [tag, "Local file" if self.pb.playing_local else t.source_label]
         info = self.pb.tempo.get(t) if self.pb.tempo is not None and self.settings["tempo_flow"] else None
         if info and info[1] >= 0.35:
             bits.append(f"{round(info[0])} BPM")
-        self.artist.set_full_text(" · ".join(b for b in bits if b))
+        self.detail.set_full_text(" · ".join(b for b in bits if b))
 
     def _on_current(self, t) -> None:
         self.art.set_track(t)
-        self.song.set_full_text(identity.display(t)[0] if t else "")
+        title, artist, _tag = identity.display_parts(t) if t else ("", "", "")
+        self.song.set_full_text(title)
+        self.artist.set_full_text(artist)
         self.show_bpm()
         self.open_btn.setVisible(t is not None)
         self.playlist_btn.setVisible(t is not None)

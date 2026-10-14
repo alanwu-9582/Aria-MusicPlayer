@@ -37,6 +37,7 @@ TOKENS = {
         "window": "#f5f5f7", "content": "#ffffff", "sidebar": "#ebebef", "elevated": "#ffffff",
         "control": "#ffffff", "control_hover": "#f2f2f5",
         "fill": "rgba(120,120,128,0.12)", "fill_strong": "rgba(120,120,128,0.20)",
+        "hover": "rgba(120,120,128,0.08)", "selection": "rgba(120,120,128,0.17)",
         "label": "#1d1d1f", "secondary": "#6e6e73", "tertiary": "#a1a1a6",
         "separator": "rgba(0,0,0,0.10)", "separator_hex": "#e0e0e5",
         "canvas": "#1c1c1e", "segment_on": "#ffffff",
@@ -48,6 +49,7 @@ TOKENS = {
         "window": "#1c1c1e", "content": "#232325", "sidebar": "#28282b", "elevated": "#2c2c2e",
         "control": "#3a3a3c", "control_hover": "#444447",
         "fill": "rgba(120,120,128,0.24)", "fill_strong": "rgba(120,120,128,0.36)",
+        "hover": "rgba(120,120,128,0.15)", "selection": "rgba(120,120,128,0.30)",
         "label": "#f5f5f7", "secondary": "#a1a1a6", "tertiary": "#6e6e73",
         "separator": "rgba(255,255,255,0.10)", "separator_hex": "#3a3a3d",
         "canvas": "#111113", "segment_on": "#636366",
@@ -70,6 +72,12 @@ UI_FAMILIES = ["Segoe UI", "Microsoft JhengHei UI", "Microsoft JhengHei"]
 MONO_FAMILIES = ["Cascadia Mono", "Consolas", "Microsoft JhengHei UI"]
 
 ROW = 30          # §0.1 control height
+
+# Motion: one sense of time for the whole app (nothing loops or plays for decoration).
+MICRO_MS = 130        # hover, a saved state, icons
+STANDARD_MS = 190     # selection, toasts, panels and controls showing
+EMPHASIS_MS = 320     # a cover changing, the lyrics moving on, a tint following the cover
+CAMERA_MS = 400       # the longest of all: Collage's slide to the next song
 
 
 def radius(r: float, w: float, h: float) -> float:
@@ -122,6 +130,7 @@ class Theme(QObject):
         self.mode = "light"
         self._colors: dict[str, QColor] = {}
         self._app = None
+        self.reduce_motion = False      # Settings › Reduce Motion: things change in place, nothing travels
 
     # ---- lookups -------------------------------------------------------------
 
@@ -277,6 +286,9 @@ QSplitter::handle {{ background: transparent; }}
 #Group {{ background: {t['content']}; border: 1px solid {t['separator_hex']}; border-radius: 10px; }}
 #Card {{ background: {t['content']}; border: 1px solid {t['separator_hex']}; border-radius: 12px; }}
 #Secondary {{ color: {t['secondary']}; }}
+#NowTitle {{ font-size: 22px; font-weight: 700; }}
+#NowArtist {{ color: {t['label']}; font-size: 15px; font-weight: 500; }}
+#Tertiary {{ color: {t['tertiary']}; font-size: 12px; }}
 #Caption {{ color: {t['secondary']}; font-size: 12px; }}
 #Mono {{ color: {t['secondary']}; font-size: 12px; }}
 #Large {{ font-size: 26px; font-weight: 700; }}

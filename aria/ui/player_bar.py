@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRectF, Qt
 from PySide6.QtGui import QFontMetrics, QPainter, QPainterPath
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QToolTip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QSizePolicy, QToolTip, QVBoxLayout, QWidget
 
 from aria.core.models import Track, format_duration
 from aria.core.player import LOADING, PLAYING
@@ -59,6 +59,8 @@ class ElidedLabel(QLabel):
             self.setObjectName(role)
         self._full = ""
         self.setMinimumWidth(40)
+        # a long name is cut short, never pushes what's beside it
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
     def set_full_text(self, text: str) -> None:
         self._full = text

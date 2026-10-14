@@ -12,12 +12,14 @@ DATA_DIR = Path(os.environ["ARIA_DATA_DIR"]) if os.environ.get("ARIA_DATA_DIR") 
 AUDIO_DIR = DATA_DIR / "audio"
 CACHE_DIR = DATA_DIR / "cache"
 THUMB_DIR = CACHE_DIR / "thumbs"
+COVERS_DIR = DATA_DIR / "covers"           # pictures chosen for shelf items
 
 LIBRARY_FILE = DATA_DIR / "library.json"
 SESSION_FILE = DATA_DIR / "session.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 SHELF_FILE = DATA_DIR / "shelf.json"
+DOWNLOADS_FILE = DATA_DIR / "downloads.json"     # downloads not finished yet (continued at the next start)
 LISTENING_FILE = DATA_DIR / "listening.json"
 BALANCE_FILE = DATA_DIR / "balance.json"
 LOG_FILE = DATA_DIR / "aria.log"

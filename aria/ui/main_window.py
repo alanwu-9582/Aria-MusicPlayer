@@ -9,7 +9,7 @@ import os
 from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QHBoxLayout,
-                               QLineEdit, QMainWindow, QMenu, QPlainTextEdit, QStackedWidget, QSystemTrayIcon,
+                               QLineEdit, QMainWindow, QPlainTextEdit, QStackedWidget, QSystemTrayIcon,
                                QTextEdit, QVBoxLayout, QWidget)
 
 from aria import paths
@@ -21,16 +21,12 @@ from aria.ui.actions import TrackActions
 from aria.ui.mini import MiniPlayer, Tray
 from aria.ui.pages.library import LibraryPage
 from aria.ui.pages.now_playing import NowPlayingPage
-from aria.ui.pages.playlist import PlaylistPage
 from aria.ui.pages.search import SearchPage
 from aria.ui.player_bar import PlayerBar
 from aria.ui.quick import Command, QuickActions
 from aria.ui.status_bar import StatusBar
 from aria.ui.theme import theme
-from aria.ui.widgets import rack as rack_mod
-from aria.ui.widgets.dialogs import prompt
 from aria.ui.widgets.sidebar import Sidebar
-from aria.ui.widgets.smart_dialog import edit_smart
 from aria.ui.widgets.toast import Toast
 from aria.ui.widgets.tracklist import TrackListView
 
@@ -42,7 +38,6 @@ GROUPS = [
 ]
 PAGE_COUNT = sum(len(items) for _t, items in GROUPS)
 NOW, SEARCH, LIBRARY, SHELF, CONSOLE, SETTINGS = range(PAGE_COUNT)
-PLAYLIST = PAGE_COUNT                       # shared page for whichever playlist is open
 STATE_TEXT = {PLAYING: "Playing", PAUSED: "Paused", LOADING: "Loading…"}
 APPEARANCES = ("system", "light", "dark")
 
@@ -54,7 +49,7 @@ class MainWindow(QMainWindow):
         self.listening = listening
         self.balance = balance
         self.devices = devices
-        rack_mod.reduce_motion = bool(settings["reduce_motion"])
+        theme.reduce_motion = bool(settings["reduce_motion"])
         self.settings = settings
         self.playback = playback
         self.library = library
@@ -64,6 +59,7 @@ class MainWindow(QMainWindow):
         self.log_bus = log_bus
         self._quitting = False
         self._tray_hint_shown = False
+        self._focus_before_mini = None
         self.setWindowTitle("Aria")
         self.setMinimumSize(1000, 660)
 
@@ -90,7 +86,7 @@ class MainWindow(QMainWindow):
         self.actions.switcher = self.switcher
         self.actions.edit_info = self.edit_song_info
         from aria.ui.widgets.lyrics_view import LyricsView
-        LyricsView.set_extras(settings["lyrics_translation"], settings["lyrics_words"])
+        LyricsView.set_extras(settings["lyrics_translation"])
         self._learn_artists()
         library.changed.connect(self._learn_artists)
         from aria.core.activity import Activity
@@ -105,10 +101,8 @@ class MainWindow(QMainWindow):
         self.now_page = NowPlayingPage(playback, library, self.actions, settings, listening)
         self.search_page = SearchPage(library, self.actions, settings)
         self.library_page = LibraryPage(library, downloader, self.actions, self.toast, settings)
-        self.playlist_page = PlaylistPage(playlists, self.actions, self.toast, library, listening, settings)
-        self._built: dict[int, QWidget] = {NOW: self.now_page, SEARCH: self.search_page,
-                                           LIBRARY: self.library_page, PLAYLIST: self.playlist_page}
-        for i in range(PAGE_COUNT + 1):
+        self._built: dict[int, QWidget] = {NOW: self.now_page, SEARCH: self.search_page, LIBRARY: self.library_page}
+        for i in range(PAGE_COUNT):
             self.pages.addWidget(self._built.get(i) or QWidget())
         main.addWidget(self.pages, 1)
         main.addWidget(self.player_bar)
@@ -151,7 +145,8 @@ class MainWindow(QMainWindow):
             return w
         if index == SHELF:
             from aria.ui.pages.shelf import ShelfPage
-            w = ShelfPage(self.shelf, self.playlists, self.actions, self.toast, self.settings)
+            w = ShelfPage(self.shelf, self.playlists, self.actions, self.toast, self.settings, self.smart_tracks,
+                          self.listening)
         elif index == CONSOLE:
             from aria.ui.commands import Commands
             from aria.ui.pages.console import ConsolePage
@@ -182,14 +177,13 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         pb = self.playback
         self.sidebar.page_selected.connect(self.go)
-        self.sidebar.playlist_selected.connect(self.open_playlist)
-        self.sidebar.playlist_context.connect(self._playlist_menu)
-        self.sidebar.new_playlist.connect(self._add_menu)
         self.sidebar.collapse_toggled.connect(lambda c: self.settings.__setitem__("sidebar_collapsed", c))
         self.sidebar.appearance_clicked.connect(self._cycle_appearance)
         self.sidebar.quit_clicked.connect(self.quit_app)
         self.sidebar.tracks_to_queue.connect(self.actions.enqueue)
-        self.playlists.changed.connect(self._sync_playlists)
+        # every playlist and Smart Collection stands on the shelf (also before the Shelf page is built)
+        self.playlists.changed.connect(lambda: self.shelf.sync_playlists(self.playlists))
+        self.shelf.sync_playlists(self.playlists)
         pb.notice.connect(lambda kind, text: self.toast(kind, text))
         pb.state_changed.connect(lambda _s: self._update_status())
         pb.current_changed.connect(self._on_current)
@@ -207,7 +201,11 @@ class MainWindow(QMainWindow):
         self.now_page.art.customContextMenuRequested.connect(
             lambda pos: self.playback.current and self.actions.menu(self, [self.playback.current]).exec(
                 self.now_page.art.mapToGlobal(pos)))
-        self.downloader.progress.connect(lambda lbl, f: self.status.set_job(f"Downloading {lbl}", f))
+        self.downloader.progress.connect(lambda text, f: self.status.set_job(text, f))
+        self.downloader.stopped.connect(lambda why: (self.status.set_job(None), self.toast("warning", why)))
+        QTimer.singleShot(8000, self.downloader.resume)        # downloads left unfinished last time
+        # a finished download with line-synced lyrics: its words get timed too (Word-by-Word Everything)
+        self.downloader.after = lambda t, lyr: self.now_page.words.request(t, lyr, t.local_path)
         self.downloader.finished.connect(self.library.set_local)
         self.downloader.finished.connect(self.playlists.set_local)
         self.downloader.finished.connect(pb.local_available)
@@ -283,7 +281,6 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(QByteArray.fromBase64(geo.encode()))
         else:
             self.resize(1240, 780)
-        self._sync_playlists()
         self.sidebar.set_collapsed(self.settings["sidebar_collapsed"])
         self.sidebar.set_appearance(self.settings["appearance"])
         self.go(min(self.settings["page"], PAGE_COUNT - 1))
@@ -300,86 +297,24 @@ class MainWindow(QMainWindow):
         page.on_shown()
 
     def open_playlist(self, pid: str) -> None:
-        """A playlist or a Smart Collection (they share the page)."""
-        if self.playlists.get_smart(pid):
-            self.playlist_page.show_smart(pid)
-        else:
-            self.playlist_page.show_playlist(pid)
-        self.pages.setCurrentWidget(self.playlist_page)
-        self.sidebar.select_playlist(pid)
+        """A playlist or a Smart Collection: they open on the Shelf, like an album."""
+        self.go(SHELF)
+        self.shelf_page.open_list(pid)
 
     def new_playlist(self) -> None:
-        name = prompt(self, "New Playlist", "Playlist name", "Create")
-        if name:
-            p = self.playlists.create(name)
-            self.open_playlist(p.id)
+        self.go(SHELF)
+        self.shelf_page.new_playlist()
 
     def new_smart(self, preset: int | None = None) -> None:
         """A Smart Collection from a preset, or (None) from the rule editor."""
-        if preset is not None:
-            name, rules = smart.PRESETS[preset]
-            sc = smart.SmartCollection(name=name, rules=[dict(r) for r in rules])
-        else:
-            sc = edit_smart(self, None, lambda c: len(self.playlist_page.matches(c)))
-            if sc is None:
-                return
-        self.playlists.add_smart(sc)
-        self.open_playlist(sc.id)
+        self.go(SHELF)
+        self.shelf_page.new_smart(preset)
 
-    def _add_menu(self) -> None:
-        """The sidebar's “+”: a playlist, or a Smart Collection (presets or custom rules)."""
-        m = QMenu(self)
-        c = theme.color("label")
-        m.addAction(icons.icon("list", c, 16), "New Playlist…", self.new_playlist)
-        sub = m.addMenu(icons.icon("smart", c, 16), "New Smart Collection")
-        for i, (name, _rules) in enumerate(smart.PRESETS):
-            sub.addAction(name, lambda i=i: self.new_smart(i))
-        sub.addSeparator()
-        sub.addAction("Custom Rules…", lambda: self.new_smart(None))
-        btn = self.sidebar.add_btn
-        m.exec(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
-
-    def _sync_playlists(self) -> None:
-        self.sidebar.set_playlists([(p.id, p.name, "list") for p in self.playlists.items]
-                                   + [(s.id, s.name, "smart") for s in self.playlists.smart])
-        on_playlist = self.pages.currentWidget() is self.playlist_page
-        shown = self.playlist_page.smart_id or self.playlist_page.pid or ""
-        if on_playlist and not (self.playlists.get(shown) or self.playlists.get_smart(shown)):
-            self.go(NOW)
-        elif on_playlist and shown:
-            self.sidebar.select_playlist(shown)
-
-    def _playlist_menu(self, pid: str, pos) -> None:
-        sc = self.playlists.get_smart(pid)
-        c = theme.color("label")
-        if sc:
-            m = QMenu(self)
-            m.addAction(icons.icon("play", c, 16), "Play",
-                        lambda: self.actions.play_playlist(self.playlist_page.matches(sc)))
-            m.addAction(icons.icon("smart", c, 16), "Edit Rules…",
-                        lambda: (self.open_playlist(pid), self.playlist_page.edit_rules()))
-            m.addSeparator()
-            m.addAction(icons.icon("trash", c, 16), "Delete Collection…",
-                        lambda: (self.open_playlist(pid), self.playlist_page.delete()))
-            m.exec(pos)
-            return
-        p = self.playlists.get(pid)
-        if not p:
-            return
-        m = QMenu(self)
-        m.addAction(icons.icon("play", c, 16), "Play", lambda: self.actions.play_playlist(p.tracks))
-        m.addAction(icons.icon("disc", c, 16), "Put on Shelf", lambda: self.shelf_page.put_playlist(pid))
-        m.addAction(icons.icon("pencil", c, 16), "Rename…", lambda: (self.open_playlist(pid), self.playlist_page.rename()))
-        m.addSeparator()
-        m.addAction(icons.icon("trash", c, 16), "Delete Playlist…", lambda: self.delete_playlist(pid))
-        m.exec(pos)
-
-    def delete_playlist(self, pid: str) -> None:
-        p = self.playlists.get(pid)
-        if p:
-            self.actions.remove_with_files(self, list(p.tracks), f"Delete “{p.name}”?",
-                                           "Songs stay in your Library and queue.",
-                                           lambda: self.playlists.delete(pid))
+    def smart_tracks(self, sc) -> list:
+        """A Smart Collection's songs right now (from the library, and what's been played)."""
+        played = self.listening.played_tracks() if self.listening is not None else []
+        stats = self.listening.stats if self.listening is not None else {}
+        return smart.evaluate(sc, self.library.tracks, played, stats)
 
     # ---- behaviour -----------------------------------------------------------
 
@@ -427,8 +362,6 @@ class MainWindow(QMainWindow):
             view.viewport().update()
         if self.library_page.rack_mode:
             self.library_page._sync_rack()
-        if self.playlist_page.isVisible() and self.playlist_page.stack.currentIndex() == 1:
-            self.playlist_page._sync_rack()
         cur = self.playback.current
         if cur is not None and cur.key == track.key:
             self.now_page._on_current(cur)
@@ -440,9 +373,14 @@ class MainWindow(QMainWindow):
 
     def settings_changed(self, key: str) -> None:
         value = self.settings[key]
-        if key in ("lyrics_translation", "lyrics_words"):
+        if key == "lyrics_translation":
             from aria.ui.widgets.lyrics_view import LyricsView
-            LyricsView.set_extras(self.settings["lyrics_translation"], self.settings["lyrics_words"])
+            LyricsView.set_extras(self.settings["lyrics_translation"])
+        if key == "lyrics_words_all" and value:
+            self.now_page.refine_words()                                 # the playing song's words now
+        if key == "collage_centre" and self.immersive is not None:
+            self.immersive.collage.set_centre(int(value))
+            self.immersive._arrange()
         if key == "console_clear_after":
             self.log_bus.limit = value
         if key in ("crossfade", "crossfade_secs"):
@@ -454,7 +392,7 @@ class MainWindow(QMainWindow):
             pb.apply_tempo()
             self.now_page.show_bpm()
         elif key == "reduce_motion":
-            rack_mod.reduce_motion = bool(self.settings["reduce_motion"])
+            theme.reduce_motion = bool(self.settings["reduce_motion"])
         elif key == "balance_mode" and self.balance is not None:
             self.balance.set_value(self.balance.value)
         elif key == "lyrics_enhanced" and self.settings["lyrics_enhanced"]:
@@ -563,7 +501,7 @@ class MainWindow(QMainWindow):
         self.status.set_job("Exporting backup")
         tasks.run(lambda: snapshot.create("manual", Path(dest), include_audio=audio),
                   lambda _p: (self.status.set_job(None), self.toast("success", "Backup exported")),
-                  lambda e: (self.status.set_job(None), self.toast("danger", "Couldn’t export the backup")))
+                  lambda e: (self.status.set_job(None), self.toast("danger", "Couldn’t export the backup")), lane="bulk")
 
     def import_backup(self) -> None:
         from pathlib import Path
@@ -753,7 +691,6 @@ class MainWindow(QMainWindow):
         key = track.key if track else None
         self.library_page.set_playing(key)
         self.search_page.results.set_playing(key)
-        self.playlist_page.set_playing(key)
         if SHELF in self._built:
             self.shelf_page.detail.list.set_playing(key)
         self.setWindowTitle(f"{track.title} — Aria" if track else "Aria")
@@ -831,13 +768,25 @@ class MainWindow(QMainWindow):
     # ---- window / tray -------------------------------------------------------
 
     def show_mini(self) -> None:
+        # what had the focus, so coming back carries on from there
+        self._focus_before_mini = QApplication.focusWidget() if self.isActiveWindow() else self._focus_before_mini
         self.mini.show_near(self)
 
     def bring_back(self) -> None:
+        """Back from the mini player or the tray: the window as it was (maximized stays maximized),
+        the same page and the same control in focus; playback never paused for any of it."""
         self.mini.hide()
-        self.showNormal()
+        if self.isMinimized() or not self.isVisible():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+            self.show()
         self.raise_()
         self.activateWindow()
+        w, self._focus_before_mini = self._focus_before_mini, None
+        try:
+            if w is not None and w.window() is self and w.isVisible():
+                w.setFocus(Qt.FocusReason.OtherFocusReason)
+        except RuntimeError:
+            pass                                    # that control is gone meanwhile
 
     def quit_app(self) -> None:
         self._quitting = True

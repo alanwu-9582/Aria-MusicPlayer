@@ -1,4 +1,7 @@
-"""User collections: playlists and the record shelf (albums)."""
+"""User collections: playlists and the record shelf.
+
+The shelf holds everything the listener collects: albums and playlists found online, and every
+one of their own playlists and Smart Collections (those stand there by themselves)."""
 
 from __future__ import annotations
 
@@ -46,8 +49,15 @@ class Album:
     tracks: list[Track] = field(default_factory=list)
     id: str = field(default_factory=_new_id)
     added: float = field(default_factory=time.time)
-    kind: str = "album"               # album | playlist
-    playlist_id: str = ""             # set for the user's own playlists: tracks come from Playlists, live
+    kind: str = "album"               # album | playlist | smart
+    playlist_id: str = ""             # the user's own playlist: tracks come from Playlists, live
+    smart_id: str = ""                # a Smart Collection: tracks come from its rules, live
+    custom_cover: str = ""            # a picture the listener chose (a file name in data/covers)
+
+    @property
+    def own(self) -> bool:
+        """One of the listener's own lists (a playlist or a Smart Collection), not found online."""
+        return bool(self.playlist_id or self.smart_id)
 
     @property
     def duration(self) -> float:
@@ -186,6 +196,15 @@ class Playlists(QObject):
         self._saver.flush()
 
 
+def _drop_cover(album: Album) -> None:
+    """Delete the picture chosen for a shelf entry (it's going, or getting another one)."""
+    if album.custom_cover:
+        try:
+            (paths.COVERS_DIR / album.custom_cover).unlink()
+        except OSError:
+            pass
+
+
 class Shelf(QObject):
     """Albums in the user's own order."""
 
@@ -202,30 +221,42 @@ class Shelf(QObject):
     def has(self, url: str) -> bool:
         return any(a.url == url for a in self.albums if url)
 
-    def has_playlist(self, pid: str) -> bool:
-        return any(a.playlist_id == pid for a in self.albums)
-
-    def add_playlist(self, playlist: Playlist) -> bool:
-        if self.has_playlist(playlist.id):
-            return False
-        self.albums.insert(0, Album(title=playlist.name, kind="playlist", playlist_id=playlist.id, source="aria"))
-        self._changed()
-        return True
+    def entry_for(self, list_id: str) -> Album | None:
+        """The shelf entry of one of the listener's playlists or Smart Collections."""
+        return next((a for a in self.albums if list_id and list_id in (a.playlist_id, a.smart_id)), None)
 
     def sync_playlists(self, playlists: Playlists) -> None:
-        """Follow renames; drop shelf entries whose playlist was deleted."""
+        """Every playlist and Smart Collection stands on the shelf: new ones go in front, renames
+        follow, deleted ones come off."""
         changed = False
         for a in list(self.albums):
-            if not a.playlist_id:
+            if not a.own:
                 continue
-            p = playlists.get(a.playlist_id)
+            p = playlists.get(a.playlist_id) if a.playlist_id else playlists.get_smart(a.smart_id)
             if p is None:
+                _drop_cover(a)
                 self.albums.remove(a)
                 changed = True
             elif a.title != p.name:
                 a.title = p.name
                 changed = True
+        have = {a.playlist_id or a.smart_id for a in self.albums if a.own}
+        fresh = [Album(title=p.name, kind="playlist", playlist_id=p.id, source="aria")
+                 for p in playlists.items if p.id not in have]
+        fresh += [Album(title=s.name, kind="smart", smart_id=s.id, source="aria")
+                  for s in playlists.smart if s.id not in have]
+        if fresh:
+            self.albums[:0] = fresh[::-1]                  # the newest first
+            changed = True
         if changed:
+            self._changed()
+
+    def set_cover(self, aid: str, name: str) -> None:
+        """A picture from data/covers for this entry ("" = back to the automatic cover)."""
+        a = self.get(aid)
+        if a is not None:
+            _drop_cover(a)
+            a.custom_cover = name
             self._changed()
 
     def add(self, album: Album) -> bool:
@@ -236,6 +267,9 @@ class Shelf(QObject):
         return True
 
     def remove(self, aid: str) -> None:
+        for a in self.albums:
+            if a.id == aid:
+                _drop_cover(a)
         self.albums = [a for a in self.albums if a.id != aid]
         self._changed()
 

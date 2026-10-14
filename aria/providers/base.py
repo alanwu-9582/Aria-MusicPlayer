@@ -9,12 +9,14 @@ from typing import Callable
 
 from aria import paths
 from aria.core.models import Stream, Track
+from aria.providers.errors import ProviderCapabilities
 
-Progress = Callable[[float], None]
+Progress = Callable[..., None]           # (fraction 0..1, bytes per second or None)
 
 
 class Provider:
     source = ""
+    capabilities = ProviderCapabilities()       # what this provider can do (callers ask this, not the source name)
 
     def match(self, url: str) -> bool:
         """Whether this provider handles ``url``."""

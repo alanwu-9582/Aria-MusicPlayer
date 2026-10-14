@@ -35,12 +35,15 @@ VERSION = re.compile(
     r"live(?:\s+ver(?:sion)?\.?)?|acoustic(?:\s+ver(?:sion)?\.?)?|unplugged|remix|cover|instrumental|"
     r"off\s*vocal|inst\.?|remaster(?:ed)?(?:\s+\d{4})?|piano\s*ver(?:sion)?\.?|re-?record(?:ing|ed)?|"
     r"新録|再録|"
-    r"歌ってみた|弾いてみた|翻唱|カバー|ライブ|現場|伴奏|纯音乐|純音樂)(?![A-Za-z])", re.IGNORECASE)
+    r"歌ってみた|弾いてみた|翻唱|カバー|ライブ|現場|伴奏|纯音乐|純音樂|カラオケ|karaoke)(?![A-Za-z])", re.IGNORECASE)
 DECOR = re.compile(
     r"(?<![A-Za-z])(official\s*(?:music\s*)?(?:video|audio|mv|lyric\s*video|visualizer)?|music\s*video|"
     r"lyric(?:s)?\s*video|lyrics?|visualizer|audio|video|mv|m/v|pv|4k|hd|hq|1080p|60fps|"
-    r"with\s*lyrics|歌詞|动态歌词|動態歌詞|中字|中日字幕|中文字幕|字幕|完整版|高音質|高音质|官方|公式|"
+    r"with\s*lyrics|歌詞付き|字幕付き|歌詞|动态歌词|動態歌詞|中字|中日字幕|中文字幕|字幕|完整版|高音質|高音质|官方|公式|"
     r"ミュージックビデオ)(?![A-Za-z])", re.IGNORECASE)
+# what subtitles / lyric videos say about themselves: a bracket of only these (and DECOR) isn't a name
+_SUBS = re.compile(r"(中文|日文|日語|日语|英文|韓文|韩文|中日|中英|中韓|中韩|雙語|双语|羅馬拼音|罗马拼音|羅馬音|罗马音|"
+                   r"拼音|romaji|翻譯|翻译|中譯|中译|歌詞|歌词|字幕|動態|动态|附|含)", re.IGNORECASE)
 _BRACKETS = re.compile(r"【([^】]*)】|《([^》]*)》|〈([^〉]*)〉|「([^」]*)」|『([^』]*)』|“([^”]*)”|"
                        r"\(([^)]*)\)|\[([^\]]*)\]|（([^）]*)）|［([^］]*)］")
 _KINDS = "【《〈「『([（［"
@@ -90,11 +93,40 @@ def _role(r: str) -> str:
     return r.upper() if len(r) <= 3 else r
 
 
+_PAIRS = {"(": ")", "（": "）", "[": "]", "［": "］", "【": "】", "「": "」", "『": "』", "《": "》", "〈": "〉", "“": "”"}
+_CLOSERS = {v: k for k, v in _PAIRS.items()}
+_EMPTY_BRACKETS = re.compile(r"\s?[(（\[［【「『《〈“\"]"
+                             r"[\s\"'“”‘’・·,，、:：/／|｜\-–—~]*(?:(?:from|feat\.?|ft\.?|with|by|prod\.?)"
+                             r"[\s\"'“”‘’・·,，、:：/／|｜\-–—~]*)?"
+                             r"[)）\]］】」』》〉”\"]\s?", re.IGNORECASE)
+
+
+def tidy(text: str) -> str:
+    """No empty brackets ("()", "( )", "(from )") and no half of a pair left alone ("Song )")."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _EMPTY_BRACKETS.sub(" ", text)
+    keep = [True] * len(text)
+    stack: list[int] = []
+    for i, ch in enumerate(text):
+        if ch in _PAIRS:
+            stack.append(i)
+        elif ch in _CLOSERS:
+            if stack and text[stack[-1]] == _CLOSERS[ch]:
+                stack.pop()
+            else:
+                keep[i] = False                                 # a closer with no opener
+    for i in stack:
+        keep[i] = False                                         # an opener never closed
+    return "".join(c for c, k in zip(text, keep) if k).strip()
+
+
 def _clean(text: str) -> str:
-    text = DECOR.sub(" ", text)
+    text = tidy(DECOR.sub(" ", text))
     text = re.sub(r"[ \t\u3000]{2,}", "\x00", text)          # two spaces part names ("米津玄師  Kenshi Yonezu")
     text = re.sub(r"\s+", " ", text).replace("\x00", "  ")
-    return text.strip(" -–—~|｜/／:：,.")
+    return text.strip(" -–—~|｜/／:：,.'\"")
 
 
 def clean_uploader(uploader: str) -> str:
@@ -130,8 +162,10 @@ def _artist_evidence(part: str, uploader: str) -> float:
     return s
 
 
-def parse(raw: str, uploader: str = "", album: str = "") -> TrackIdentity:
-    """Read a video / file title into a :class:`TrackIdentity` (see the module notes)."""
+def parse(raw: str, uploader: str = "", album: str = "", hint: str = "") -> TrackIdentity:
+    """Read a video / file title into a :class:`TrackIdentity` (see the module notes). ``hint``:
+    the song's name as the listener typed it to find this (Search) — a part saying just that is
+    the title, not the singer."""
     raw = html.unescape(raw or "").strip()
     ident = TrackIdentity(raw_title=raw, uploader=uploader, album=album)
     up = clean_uploader(uploader)
@@ -150,13 +184,16 @@ def parse(raw: str, uploader: str = "", album: str = "") -> TrackIdentity:
         cov = _COVER_BY.search(inner)
         if cov and cov.group(1) and kind in "([（［":
             ident.version, ident.performer = ident.version or "Cover", _clean(cov.group(1))
-        elif VERSION.search(inner) and len(_clean(VERSION.sub(" ", inner))) <= 2:
-            ident.version = ident.version or VERSION.search(inner).group(1).strip()
+        elif VERSION.search(inner) and (len(_clean(VERSION.sub(" ", inner))) <= 2
+                                        or (kind in "([（［" and VERSION.match(inner.strip()))):
+            # "(Live)", or "(Live at Budokan)": the whole bracket says which version
+            rest = _clean(VERSION.sub(" ", inner))
+            ident.version = ident.version or (inner.strip() if len(rest) > 2 else VERSION.search(inner).group(1).strip())
             cov = _COVER_BY.search(inner)
             if cov and cov.group(1):
                 ident.performer = cov.group(1).strip()
-        elif not _clean(inner):
-            pass                                                    # (Official Music Video), 【MV】 …
+        elif not _clean(_SUBS.sub(" ", inner)):
+            pass                                                    # (Official Music Video), 【MV】, 【中日歌詞】 …
         elif ROLE.search(inner) and kind in "([（［【":
             # (TVアニメ「X」OP主題歌) — the work is inside
             r = ROLE.search(inner)
@@ -255,21 +292,32 @@ def parse(raw: str, uploader: str = "", album: str = "") -> TrackIdentity:
         conf["title"], prov["title"] = 0.7, "parsed"
         artist, conf["artist"], prov["artist"] = from_uploader()
     elif len(parts) >= 2:
-        a, b = parts[0], parts[1]
-        ea, eb = _artist_evidence(a, up), _artist_evidence(b, up)
+        hinted = [bool(hint) and textnorm.fold(p) == textnorm.fold(hint) for p in parts]
         sep = re.search(r"\s+[-–—~]\s+|\s*[／/｜|]\s*|\s+-|-\s+", work)
         slash = bool(sep and re.search(r"[／/｜|]", sep.group(0)))
         prior_left = 0.0 if title_after_role else (-0.1 if slash else 0.1)   # "Artist - Title" / "Title / Artist"
+        known = [textnorm.artist_key(p) in KNOWN_ARTISTS for p in parts]
+        if len(parts) == 3 and up and textnorm.names_channel(parts[2], up) >= 0.5                 and (any(known[:2]) or any(hinted[:2])) and not any(textnorm.names_channel(p, up) >= 0.5 for p in parts[:2]):
+            # "Artist - Title / THE FIRST TAKE": the last part is the channel's series, not the singer
+            # (said by a singer or the searched name among the first two — else it may be the singer)
+            parts, hinted, prior_left = parts[:2], hinted[:2], 0.1
+        a, b = parts[0], parts[1]
+        ea, eb = _artist_evidence(a, up), _artist_evidence(b, up)
         sa, sb = ea + max(0.0, prior_left), eb + max(0.0, -prior_left) + (0.1 if title_after_role else 0.0)
+        named = 0.6 if any(hinted[:2]) else 0.0                 # what was searched for: the other part sings
+        sa, sb = sa + (named if hinted[1] else 0.0), sb + (named if hinted[0] else 0.0)
         if len(parts) >= 3:
             # several dashes: the part the evidence names is the artist; the title stays conservative
-            scores = [_artist_evidence(p, up) for p in parts]
+            scores = [-1.0 if hinted[i] else _artist_evidence(p, up) for i, p in enumerate(parts)]
             k = max(range(len(parts)), key=lambda i: scores[i])
             if scores[k] >= 0.35:
                 artist = parts[k]
                 rest = [p for i, p in enumerate(parts) if i != k]
-                title = rest[-1] if k == 0 else rest[0]
+                title = next((p for i, p in enumerate(parts) if hinted[i]), rest[-1] if k == 0 else rest[0])
                 conf["artist"], conf["title"] = min(0.9, 0.5 + scores[k]), 0.55
+            elif any(hinted):
+                title, artist = parts[hinted.index(True)], ""          # the name searched for; the singer unsure
+                conf["title"], conf["artist"] = 0.75, 0.0
             else:
                 title, artist = _clean(work), ""
                 conf["title"], conf["artist"] = 0.35, 0.0
@@ -279,7 +327,7 @@ def parse(raw: str, uploader: str = "", album: str = "") -> TrackIdentity:
             left_artist = sa >= sb
             artist, title = (a, b) if left_artist else (b, a)
             margin = abs(sa - sb)
-            evidence = max(ea, eb)
+            evidence = max(ea, eb, named)
             conf["artist"] = min(0.95, 0.35 + evidence + margin / 2)
             conf["title"] = min(0.95, 0.45 + evidence + margin / 2)
             prov["title"] = prov["artist"] = "parsed"
@@ -292,7 +340,7 @@ def parse(raw: str, uploader: str = "", album: str = "") -> TrackIdentity:
         if bare and bare != artist:
             artist = bare                                           # "南拳媽媽(Nan Quan Mama)": the alias in brackets goes
     ident.title = _clean(_FEAT.sub("", title)) if title else _clean(raw)
-    ident.artist = artist
+    ident.artist = tidy(artist)
     if not ident.title:
         ident.title, conf["title"] = raw, 0.2
     for name in ("franchise", "role", "version", "performer"):
@@ -388,7 +436,7 @@ def of(track) -> TrackIdentity:
         ident.confidence.update(title=0.95, artist=0.95)
         ident.provenance.update(title="provider", artist="provider")
     else:
-        ident = parse(track.title, track.artist)
+        ident = parse(track.title, track.artist, hint=_title_hints.get(track.key, ""))
     user = overrides().get(track.key)
     for name in FIELDS:
         if user.get(name):
@@ -414,24 +462,61 @@ def of(track) -> TrackIdentity:
     return ident
 
 
-_shown: dict[tuple, tuple[str, str]] = {}
+_shown: dict[tuple, tuple[str, str, str]] = {}
+_title_hints: dict[str, str] = {}          # track key → the name the listener searched to find it
 
 
-def display(track) -> tuple[str, str]:
-    """(title, artist) for labels: the listener's corrections, else the confident reading, else
-    the raw title — a low-confidence guess never replaces what the source says."""
-    k = (track.key, track.title, track.artist, signature(track))
+def hint_titles(tracks, name: str | None) -> None:
+    """These search results were found by typing ``name`` (a song's name, not a singer's):
+    a part of their titles saying just that is the title. None: forget it."""
+    _title_hints.clear()
+    if name:
+        _title_hints.update({t.key: name for t in tracks})
+
+_TAGS = [(re.compile(p, re.IGNORECASE), tag) for p, tag in (
+    (r"live|ライブ|現場", "Live"), (r"cover|歌ってみた|弾いてみた|翻唱|カバー", "Cover"), (r"remix", "Remix"),
+    (r"acoustic|unplugged", "Acoustic"), (r"tv", "TV Size"), (r"full", "Full"), (r"short", "Short"),
+    (r"instrumental|off\s*vocal|inst|伴奏|纯音乐|純音樂", "Instrumental"), (r"piano", "Piano"),
+    (r"remaster", "Remaster"), (r"re-?record|新録|再録", "Re-recorded"), (r"karaoke|カラオケ", "Karaoke"))]
+
+
+def version_tag(version: str) -> str:
+    """A version as a short tag of its own: Live, Cover, Remix, Acoustic, TV Size, Instrumental…"""
+    v = version.strip()
+    return next((tag for rx, tag in _TAGS if rx.search(v)), v[:1].upper() + v[1:] if v else "")
+
+
+def display_parts(track) -> tuple[str, str, str]:
+    """(title, artist, version tag) for labels: the listener's corrections, else the confident
+    reading, else the raw title — a low-confidence guess never replaces what the source says.
+    The version (a live take, a cover) comes apart from the title, to show as a tag."""
+    k = (track.key, track.title, track.artist, signature(track), _title_hints.get(track.key, ""))
     hit = _shown.get(k)
     if hit is None:
         ident = of(track)
         title = ident.title if ident.sure("title", 0.5) else textnorm.display_title(track.title, track.artist) or track.title
-        if ident.version and ident.version.casefold() not in title.casefold():
-            title = f"{title} ({ident.version})"            # a live take or a cover isn't the song itself
+        title = tidy(title) or title
+        tag = version_tag(ident.version) if ident.version and ident.version.casefold() not in title.casefold() else ""
         artist = ident.artist if ident.sure("artist", 0.5) and ident.artist else identity_artist(track)
+        artist = tidy(artist) or artist
         if len(_shown) > 500:
             _shown.clear()
-        hit = _shown[k] = (title, artist)
+        hit = _shown[k] = (title, artist, tag)
     return hit
+
+
+def display(track) -> tuple[str, str]:
+    """(title, artist) for labels, the version in brackets after the title: a live take or a cover
+    isn't the song itself."""
+    title, artist, tag = display_parts(track)
+    return (f"{title} ({tag})" if tag else title, artist)
+
+
+def song_key(track) -> str:
+    """The song regardless of version or upload: uploads with the same key are one song (Search
+    shows them as one, the others folded under it)."""
+    title, artist, _tag = display_parts(track)
+    return f"{textnorm.fold(textnorm.core_title(title))}|{textnorm.artist_key(artist)}"
 
 
 def identity_artist(track) -> str:

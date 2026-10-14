@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from aria.core import textnorm
 from aria.core.models import YOUTUBE, Stream, Track
 from aria.providers import ytdlp
+from aria.providers.errors import ProviderCapabilities
 from aria.providers.base import Provider, audio_template
 
 _ID = re.compile(r"^[\w-]{11}$")
@@ -62,6 +63,7 @@ def from_entry(e: dict) -> Track | None:
 
 class YouTube(Provider):
     source = YOUTUBE
+    capabilities = ProviderCapabilities(search=True, metadata=True, streaming=True, download=True, albums=True, playlists=True)
 
     def match(self, url: str) -> bool:
         return bool(video_id(url) or playlist_id(url))

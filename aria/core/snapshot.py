@@ -1,8 +1,8 @@
 """Library Snapshot: complete backups of the user's Aria data.
 
 A snapshot is a zip of every personal data file — library, playlists and
-Smart Collections, shelf, queue and history, listening sessions and stats,
-settings — plus a small manifest. Snapshots are taken automatically (daily or
+Smart Collections, shelf (with the covers chosen for it), queue and history,
+listening sessions and stats, settings — plus a small manifest. Snapshots are taken automatically (daily or
 weekly) and on demand, kept in ``data/snapshots``, and can be restored to go
 back to that point in time. An exported backup can also carry the downloaded
 songs, which moves a whole Aria to another computer.
@@ -85,6 +85,10 @@ def create(reason: str = "manual", dest: Path | None = None, include_audio: bool
         for f in data_files():
             if f.exists():
                 z.write(f, f.name)
+        if paths.COVERS_DIR.exists():
+            for c in paths.COVERS_DIR.iterdir():
+                if c.is_file():
+                    z.write(c, f"covers/{c.name}")
         for a in audio:
             z.write(a, f"audio/{a.name}", compress_type=zipfile.ZIP_STORED)   # already compressed
     os.replace(tmp, dest)
@@ -154,6 +158,9 @@ def restore(path: Path) -> None:
             raise ValueError("Not an Aria backup")
         paths.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         for n in names:
+            if n.startswith("covers/") and not n.endswith("/"):
+                paths.COVERS_DIR.mkdir(parents=True, exist_ok=True)
+                (paths.COVERS_DIR / Path(n).name).write_bytes(z.read(n))
             if n.startswith("audio/") and not n.endswith("/"):
                 target = paths.AUDIO_DIR / Path(n).name
                 if not target.exists():

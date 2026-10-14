@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -183,69 +184,176 @@ def local_track(path: str) -> Track:
 
 
 class Downloader(QObject):
-    """Sequential download queue."""
+    """The download queue: one song at a time, each one checked before it counts.
 
-    progress = Signal(str, float)        # "2/5 · title", 0..1 of the whole batch
+    QUEUED → DOWNLOADING → VERIFYING → done (or failed). A song downloads into a staging folder
+    inside the audio folder (``audio/.incoming``) and only moves into the audio folder — a rename
+    on the same drive — once it's been checked (media_check): a half-written file, an error page
+    or a cut-off download never shows up as offline audio. yt-dlp keeps its partial file there,
+    so a download stopped half-way (quitting, a lost connection) continues where it was. The
+    queue is kept on disk and picked up again at the next start. The same song asked for twice
+    is one job. Before each song (and while it downloads) there must be room on the drive, or the
+    queue pauses. Network trouble is tried once more at the end of the queue; lyrics are fetched
+    afterwards and never decide whether the download worked.
+    """
+
+    progress = Signal(str, float)        # "Downloading 2/5 · title · 1.2 MB/s" (or "Verifying …"), 0..1 of the batch
     finished = Signal(str, str)          # key, path
     idle = Signal(int, int)              # ok, failed
+    stopped = Signal(str)                # the queue paused, and why (no room on the drive)
+
+    MIN_FREE = 300 * 1024 * 1024         # don't start a song with less free space than this
+    STOP_FREE = 80 * 1024 * 1024         # stop a song that's downloading when it gets this low
+    after = None                         # (track with its file, lyrics or None) → called on the GUI thread
 
     def __init__(self):
         super().__init__()
         self._pending: list[Track] = []
+        self._current: Track | None = None
+        self._retried: set[str] = set()
         self._busy = False
         self._ok = self._fail = 0
         self._total = 0
+        self._saver = DebouncedSaver(paths.DOWNLOADS_FILE, self._snapshot, 600)
 
     @property
     def busy(self) -> bool:
         return self._busy
 
+    def _snapshot(self) -> dict:
+        jobs = ([self._current] if self._current is not None else []) + self._pending
+        return {"version": 1, "jobs": [t.to_dict() for t in jobs]}
+
+    def resume(self) -> int:
+        """Pick up the downloads left unfinished last time (their partial files continue)."""
+        jobs = [Track.from_dict(d) for d in read_json(paths.DOWNLOADS_FILE, {}).get("jobs", [])]
+        n = self.add(jobs)
+        if n:
+            log.info("Continuing %d unfinished download%s", n, "s" if n != 1 else "")
+        return n
+
     def add(self, tracks: list[Track]) -> int:
-        queued = {t.key for t in self._pending}
-        fresh = [t for t in tracks if t.key not in queued and t.source != LOCAL
-                 and not (t.local_path and os.path.exists(t.local_path))]
+        queued = {t.key for t in self._pending} | ({self._current.key} if self._current else set())
+        fresh = []
+        for t in tracks:
+            if t.key in queued or t.source == LOCAL or (t.local_path and os.path.exists(t.local_path)):
+                continue                                    # one job per song
+            queued.add(t.key)
+            fresh.append(t)
         self._pending.extend(fresh)
         self._total += len(fresh)
+        self._saver.schedule()
         if fresh and not self._busy:
             self._next()
         return len(fresh)
 
+    def _room(self) -> int:
+        try:
+            paths.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+            return shutil.disk_usage(paths.AUDIO_DIR).free
+        except OSError:
+            return self.MIN_FREE
+
     def _next(self) -> None:
+        self._current = None
+        self._saver.schedule()
         if not self._pending:
             self._busy = False
             self.idle.emit(self._ok, self._fail)
             self._ok = self._fail = self._total = 0
+            self._retried.clear()
             return
+        if self._room() < self.MIN_FREE:
+            self._busy = False
+            log.error("↓ Paused: not enough free space for %d download%s", len(self._pending),
+                      "s" if len(self._pending) != 1 else "")
+            self.stopped.emit("Not enough free disk space — downloads paused")
+            self._ok = self._fail = self._total = 0
+            return                                          # kept on disk: they continue next time
         self._busy = True
-        track = self._pending.pop(0)
+        track = self._current = self._pending.pop(0)
         index = self._total - len(self._pending)
-        total = self._total
+        total = max(1, self._total)
         title = track.title if len(track.title) <= 28 else track.title[:27] + "…"
         label = f"{index}/{total} · {title}" if total > 1 else title
-        # the bar covers the whole batch: finished songs plus the share of this one
-        report = lambda f: self.progress.emit(label, (index - 1 + max(0.0, min(1.0, f))) / total)  # noqa: E731
+
+        def bar(f: float) -> float:
+            return (index - 1 + max(0.0, min(1.0, f))) / total
+
+        def report(f: float, speed: float | None = None) -> None:
+            # the bar covers the whole batch: finished songs plus the share of this one
+            rate = f" · {speed / 1_048_576:.1f} MB/s" if speed and speed > 50_000 else ""
+            self.progress.emit(f"Downloading {label}{rate}", bar(f))
+
+        verifying = tasks.Progress(lambda _d, _t: self.progress.emit(f"Verifying {label}", bar(1.0)))
         report(0.0)
 
-        def done(path: str):
+        def done(result) -> None:
+            path, lyr = result
             self._ok += 1
             log.info("↓ “%s”", track.title)
             self.finished.emit(track.key, path)
+            if self.after is not None:
+                done_track = track.copy()
+                done_track.local_path = path
+                try:
+                    self.after(done_track, lyr)
+                except Exception as exc:
+                    log.warning("After-download step failed: %s", exc)
             self._next()
 
-        def failed(exc: Exception):
-            self._fail += 1
-            log.error("↓ Failed “%s”: %s", track.title, exc)
+        def failed(exc: Exception) -> None:
+            from aria.providers import errors
+            failure = errors.classify(exc, track.source)
+            if failure.retryable and track.key not in self._retried:
+                self._retried.add(track.key)                # network trouble: once more, at the end
+                self._pending.append(track)
+                log.warning("↓ “%s” will be tried again: %s", track.title, failure.safe_message)
+            else:
+                self._fail += 1
+                log.error("↓ Failed “%s”: %s", track.title, errors.redact(str(exc)))
             self._next()
 
-        def work() -> str:
-            path = providers.download(track, report)
-            try:                                         # its lyrics, as a .lrc beside it (when synced ones exist)
+        def work():
+            path = self._fetch(track, report, verifying)
+            lyr = None
+            try:                                         # its lyrics beside it (the best kind first); optional
                 from aria.core import lyrics
                 beside = track.copy()
                 beside.local_path = path
-                lyrics.fetch(beside, False)
+                lyr = lyrics.fetch(beside, False, prefer_words=True)
             except Exception as exc:
                 log.warning("No lyrics file for “%s”: %s", track.title, exc)
-            return path
+            return path, lyr
 
-        tasks.run(work, done, failed)
+        tasks.run(work, done, failed, lane="download")
+
+    def _fetch(self, track: Track, report, verifying) -> str:
+        """Download into staging, check it, then publish it into the audio folder."""
+        from aria.core import media_check
+        from aria.providers import errors
+        staging = paths.AUDIO_DIR / ".incoming"
+        staging.mkdir(parents=True, exist_ok=True)
+
+        def progress(f: float, speed: float | None = None) -> None:
+            if self._room() < self.STOP_FREE:
+                raise errors.ProviderError(errors.ProviderFailure(errors.ErrorKind.CANCELLED, track.source, False,
+                                                                  None, "Not enough free disk space"))
+            report(f, speed)
+
+        staged = providers.download_to(track, staging, progress)
+        verifying.emit(1, 1)
+        ok, why = media_check.verify(staged, track.duration)
+        if not ok:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+            raise errors.ProviderError(errors.ProviderFailure(errors.ErrorKind.UNPLAYABLE, track.source, False, None,
+                                                              "The download wasn’t valid audio"), f"rejected: {why}")
+        final = paths.AUDIO_DIR / Path(staged).name
+        if final.exists() and media_check.verify(str(final), track.duration)[0]:
+            os.remove(staged)                               # a good copy is there already: keep that one
+            return str(final)
+        os.replace(staged, final)                           # same drive: the file appears whole, at once
+        return str(final)

@@ -1,9 +1,12 @@
-"""Thumbnail loading: memory LRU → disk cache → network, decoded off the GUI thread."""
+"""Thumbnail loading: memory LRU → disk cache → network, decoded off the GUI thread.
+A local picture (an absolute file path, e.g. a cover the listener chose) is read as it is."""
 
 from __future__ import annotations
 
 import collections
 import hashlib
+import os
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
@@ -30,6 +33,8 @@ def _load(urls: list[str], height: int) -> QImage | None:
             continue
         path = paths.THUMB_DIR / (hashlib.sha1(url.encode()).hexdigest() + ".img")
         data = None
+        if os.path.isabs(url) and os.path.isfile(url):
+            path = Path(url)                     # a picture on this computer: no cached copy needed
         if path.exists():
             data = path.read_bytes()
         else:

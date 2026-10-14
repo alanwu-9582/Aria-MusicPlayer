@@ -20,7 +20,11 @@ tiles still on screen keep their songs and places; only the old middle square's 
 new song is actually playing, each new tile fading in on its own) and whatever slides in from
 beyond the edges (already there as it comes) get new songs. Nothing is scaled but the tile that
 grows, so the grid never gaps. Each tile is painted on its own from its cached cover; nothing
-repaints the whole wall at once. Reduce Motion skips the move.
+repaints the whole wall at once. Under Reduce Motion the wall is simply there: the same new
+arrangement, without the travel.
+
+Song changes never queue up slides: a new song while a slide is still on its way sends the wall
+straight to where that slide was heading, and the new song comes in with a plain fade.
 
 Otherwise what's on the wall changes only when Collage opens or the song changes — never for
 queue edits, new recommendations, progress or lyrics. Then songs still on it keep their tiles
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass
 
 from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation, Signal
@@ -39,17 +44,16 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter
 from PySide6.QtWidgets import QWidget
 
 from aria.core import identity, textnorm
-from aria.ui.theme import pixel_font as _font, thin_bar as _bar
-from aria.ui.widgets import rack as rack_mod
+from aria.ui.theme import CAMERA_MS, EMPHASIS_MS, pixel_font as _font, theme, thin_bar as _bar
 from aria.ui.widgets import thumbs as thumbs_mod
 from aria.ui.widgets.thumbs import ART_HEIGHT, artwork_urls
 
 GAP = 4
 MAX_TILES = 40
 QUEUE_SHARE = 0.65
-FADE_MS = 300
-CENTRE_SHARE = 0.46              # the middle square: about this much of the screen's height
-ZOOM_MS = 420                    # the camera's move to the next song's tile (ease-out, no overshoot)
+FADE_MS = EMPHASIS_MS            # a tile's new cover fading in
+CENTRE_SHARE = {2: 0.46, 3: 0.52, 4: 0.58}   # the middle square (n × n cells): about this much of the height
+ZOOM_MS = CAMERA_MS              # the camera's move to the next song's tile (ease-out, no overshoot)
 POP = 3.0                        # the hovered tile lifts by this much on every side
 SHAPES = ((1, 1, 5), (2, 1, 5), (1, 2, 5), (2, 2, 6), (3, 2, 3), (2, 3, 3), (3, 1, 2), (1, 3, 2),
           (3, 3, 2), (4, 2, 1), (2, 4, 1))                                   # cols, rows, weight
@@ -78,14 +82,17 @@ def visible(r: QRectF, w: int, h: int) -> float:
     return (inter.width() * inter.height()) / (r.width() * r.height()) if r.width() > 0 else 0.0
 
 
-def layout(w: int, h: int, want: int = MAX_TILES) -> tuple[list[Tile], QRectF]:
-    """The squares around a centred middle square, on one grid that runs off the screen's edges,
-    with about ``want`` showing; and the middle square. Slots come back visible, biggest and
-    nearest the middle first, so the next songs get the best places."""
+def layout(w: int, h: int, want: int = MAX_TILES, cells: int = 2) -> tuple[list[Tile], QRectF]:
+    """The squares around a centred middle square of ``cells`` × ``cells`` (Settings ›
+    Collage Now Playing), on one grid that runs off the screen's edges, with about ``want``
+    showing; and the middle square. Slots come back visible, biggest and nearest the middle
+    first, so the next songs get the best places."""
     best = None
-    for cols in range(6, 23):
+    k = max(2, min(4, cells))
+    target = h * CENTRE_SHARE[k]
+    near = [cols for cols in range(6, 30) if abs(k * w / cols - target) <= h * 0.18]
+    for cols in near or range(6, 30):
         c = w / cols
-        k = max(2, round(h * CENTRE_SHARE / c))
         side = k * c
         cx0, cy0 = (w - side) / 2, (h - side) / 2
         x0 = cx0 - math.ceil(cx0 / c) * c
@@ -197,6 +204,7 @@ class CollageView(QWidget):
         self.centre = QRectF()
         self._size = (0, 0)
         self._want = MAX_TILES
+        self.centre_cells = 2                 # Settings › Collage Now Playing (2 × 2 … 4 × 4)
         self._pix: dict[tuple, QPixmap] = {}
         self._hover = -1
         self._focus = -1
@@ -223,7 +231,7 @@ class CollageView(QWidget):
         self._u = 0.0
         self._z: dict | None = None          # wall / old / cover snapshots, the square's rect, the song awaited
         self._holding = False                # moved; waiting for the song to start
-        self._pending = False                # the song changed meanwhile: refill once it's over
+        self._burst_until = 0.0              # song changes before this make no slide of their own
         self._ghost: tuple[QPixmap, QRectF] | None = None    # the old middle, under its new squares fading in
         self._grid = (0.0, 0.0, 1.0)         # origin and cell of the grid the squares sit on
         self._free = False                   # the wall has been moved: not a fresh layout any more
@@ -267,7 +275,7 @@ class CollageView(QWidget):
 
     def _relayout(self) -> None:
         old = [it for it in self.items if it is not None]
-        self.tiles, self.centre = layout(self.width(), self.height(), self._want)
+        self.tiles, self.centre = layout(self.width(), self.height(), self._want, self.centre_cells)
         self.items = (old + [None] * len(self.tiles))[: len(self.tiles)]
         self._hover = self._focus = -1
         self._free = False
@@ -278,16 +286,35 @@ class CollageView(QWidget):
             self._grid = ((t0.rect.left() - GAP / 2) % c, (t0.rect.top() - GAP / 2) % c, c)
         self.update()
 
+    def set_centre(self, cells: int) -> None:
+        """The playing song's square spans ``cells`` × ``cells`` (a new layout, same songs)."""
+        cells = max(2, min(4, int(cells)))
+        if cells != self.centre_cells:
+            self.centre_cells = cells
+            if self.busy:
+                self._finish_move()
+            if self.tiles:
+                self._relayout()
+                self.refill(fade=False)                      # every new place gets a song
+
     def refill(self, crossfade: bool = False, fade: bool = True) -> None:
         """The song changed (or Collage just opened): who's on the wall now. Songs still on it keep
         their squares; only the squares that change fade in (and the middle square cross-fades)."""
+        cur = self.pb.current
+        merged = False
         if self.busy:
-            self._pending = True                             # after the move
-            return
+            if cur is not None and cur.key == self._z["key"]:
+                return                                       # the song the slide is heading to: it carries on
+            self._finish_move()                              # another song meanwhile: no second slide queued
+            merged = True
+        if crossfade:
+            # songs skipped through quickly (Next, Next, Next…) make one slide, then plain fades
+            now = time.monotonic()
+            merged = merged or now < self._burst_until
+            self._burst_until = now + ZOOM_MS / 1000 + 0.2
         if not self.tiles:
             return
-        cur = self.pb.current
-        if crossfade and cur is not None and self._shown is not None and cur.key != self._shown.key:
+        if crossfade and not merged and cur is not None and self._shown is not None and cur.key != self._shown.key:
             W, H = self.width(), self.height()
             here = next((k for k, it in enumerate(self.items)
                          if it is not None and it[0].key == cur.key and visible(self.tiles[k].rect, W, H) > 0.3), -1)
@@ -320,7 +347,7 @@ class CollageView(QWidget):
         changed = {i for i in range(n) if key(new[i]) != key(old[i])}
         self.items = new
         self._hover = -1
-        animate = fade and not rack_mod.reduce_motion and self.isVisible()
+        animate = fade and not theme.reduce_motion and self.isVisible()
         self._centre_prev = self._centre_now if (crossfade and animate) else None
         if animate and (changed or self._centre_prev is not None):
             self._fresh, self._t = changed, 0.0
@@ -446,13 +473,19 @@ class CollageView(QWidget):
                 "new": new, "songs": songs, "transit": transit}
 
     def _begin(self, i: int) -> bool:
-        """Start the slide to square ``i``; False when it isn't the time for one."""
-        if rack_mod.reduce_motion or not self.isVisible() or self.busy or not self.tiles or self.items[i] is None:
+        """Start the slide to square ``i`` (under Reduce Motion: be there at once); False when it
+        isn't the time for one."""
+        if not self.isVisible() or self.busy or not self.tiles or not self._live(i):
             return False
         self._fade.stop()
         self._fresh, self._t, self._centre_prev, self._ghost = set(), 1.0, None, None
         self._hover = -1
         z = self._plan(i)
+        if theme.reduce_motion:
+            z["item"], z["key"] = self.items[i], self.items[i][0].key
+            self._z = z
+            self._settle(shown=z["item"][0], quiet=True)    # where the slide would end, without the travel
+            return True
         pan = z["pan"]
         # every square on the slide, each with the cover it has: the ones on screen, and the new
         # ones coming in from beyond the edges (the ones for places on screen wait for the song)
@@ -486,9 +519,10 @@ class CollageView(QWidget):
         if self._holding and t is not None and t.key == self._z["key"] and self.pb.state == PLAYING:
             self._settle()
 
-    def _settle(self) -> None:
+    def _settle(self, shown=None, quiet: bool = False) -> None:
         """The new song plays: the slid wall is the wall; the free places on screen fill with new
-        squares, each fading in on its own (over the old middle square, fading out)."""
+        squares, each fading in on its own (over the old middle square, fading out). ``quiet``:
+        they're simply there (Reduce Motion, or a slide cut short by the next song)."""
         z = self._z
         if z is None:
             return
@@ -508,10 +542,10 @@ class CollageView(QWidget):
         self.items = [x[1] for x in placed]
         fresh = {k for k, x in enumerate(placed) if x[2]}
         self._free = True
-        self._shown = self.pb.current
-        self._z, self._holding, self._pending = None, False, False
+        self._shown = shown if shown is not None else self.pb.current
+        self._z, self._holding = None, False
         self._hover = self._focus = -1
-        if fresh and self.isVisible() and not rack_mod.reduce_motion:
+        if fresh and self.isVisible() and not quiet and not theme.reduce_motion:
             self._ghost = (z["old"], _shrink(z["gone"]))
             self._fresh, self._t = fresh, 0.0
             self._fade.start()
@@ -519,10 +553,16 @@ class CollageView(QWidget):
         self.transition.emit(False)
         self._prefetch()
 
+    def _finish_move(self) -> None:
+        """The next song came before this slide was over: the wall goes straight to where it was
+        heading (one move at a time — never a queue of them)."""
+        if self._z is not None:
+            self._settle(quiet=True)
+
     def _cancel_move(self) -> None:
         self._zoom.stop()
         self._hold_timer.stop()
-        self._z, self._holding, self._pending = None, False, False
+        self._z, self._holding = None, False
         self.update()
 
     def hideEvent(self, e):

@@ -70,7 +70,7 @@ class SessionDelegate(QStyledItemDelegate):
         p.setPen(Qt.PenStyle.NoPen)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         hovered = index.row() == self.view.hover_row
-        p.setBrush(theme.color("accent_soft" if selected else ("fill" if hovered else "content")))
+        p.setBrush(theme.color("selection" if selected else ("hover" if hovered else "content")))
         p.drawRoundedRect(QRectF(r), 9, 9)
 
         # part-of-day mark

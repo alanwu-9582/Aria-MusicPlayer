@@ -76,7 +76,7 @@ class Settings:
         "close_to_tray": True,
         "lyrics_enhanced": False,   # also look for lyrics in descriptions / comments
         "lyrics_translation": True, # show translation rows under lyric lines (when the lyrics have them)
-        "lyrics_words": True,       # word-by-word highlight (when the lyrics are timed per word)
+        "lyrics_words_all": False,  # Word-by-Word Everything: line-synced lyrics get estimated word times too
         "lyrics_align": False,      # Forced Alignment: time plain lyrics of downloaded songs with a speech model
         "align_model": "",          # which downloaded model (data/models/<id>)
         "align_streams": False,     # streamed songs with plain lyrics: download a temporary copy to align
@@ -89,10 +89,9 @@ class Settings:
         "balance_excluded": None,   # None = the built-in list (call apps)
         "balance_only": [],
         "timer_source": "library",  # Time-Fitted Playlist picks from: library | queue
-        "library_view": "list",     # list | rack
-        "playlist_view": "list",    # list | rack
+        "library_view": "list",     # list | rack | collage
         "shelf_view": "cover",      # cover | spine
-        "reduce_motion": False,     # hover effects change instantly
+        "reduce_motion": False,     # things change in place instead of moving (Collage jumps, racks don't slide)
         "output_device": "",        # "" = system default, else a device id
         "device_profiles_on": True, # each output remembers its volume and balance
         "device_profiles": {},
@@ -104,6 +103,7 @@ class Settings:
         "tempo_scope": "recommendations",   # recommendations | playlists (also orders a playlist being played)
         "immersive_layout": "editorial",    # Immersive Mode: editorial (lyrics + cover) | collage (up-next squares)
         "immersive_lyrics": True,
+        "collage_centre": 2,        # Collage: the playing song's square spans this many cells each way (2 | 3 | 4)
         "resume_on_start": False,
         "console_clear_after": 1000,    # Console: clear itself after this many messages (0 = never)   # start again with the song (and the moment) Aria was closed on
     }

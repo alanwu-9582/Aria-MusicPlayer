@@ -71,7 +71,8 @@ class Playback(QObject):
         self._recs_busy = False
         self._autoplay_waiting = False
         self._failures = 0
-        self._retried_key: str | None = None
+        self._retried_key: str | None = None       # recovered once already (a fresh address): next time it's an error
+        self._last_pos = (0.0, 0.0)                # where the song was, as last reported (s, length)
         self._resolving = False
         self._paused_at: float | None = None
         self._pause_on_start = False
@@ -106,6 +107,7 @@ class Playback(QObject):
         self.player.state_changed.connect(self._on_player_state)
         self.player.near_end.connect(self._on_near_end)
         self.player.position_changed.connect(self.position_changed)
+        self.player.position_changed.connect(lambda pos, length: setattr(self, "_last_pos", (pos, length)))
         self.player.ended.connect(self._on_ended)
         self.player.failed.connect(self._on_failed)
 
@@ -822,19 +824,21 @@ class Playback(QObject):
         self.player.stop()
         self._set_resolving(True)
 
+        # A late answer never plays over a newer choice: the request's ticket *and* the song must
+        # still be the current ones.
         def done(stream):
-            if not self._resolve.is_current(ticket):
+            if not self._resolve.is_current(ticket) or self.current is not track:
                 return
             self._set_resolving(False)
             self._load(track, stream)
 
         def failed(exc):
-            if not self._resolve.is_current(ticket):
+            if not self._resolve.is_current(ticket) or self.current is not track:
                 return
             self._set_resolving(False)
             self._skip_after_error(track, exc)
 
-        tasks.run(lambda: providers.stream(track, force=force), done, failed)
+        tasks.run(lambda: providers.stream(track, force=force), done, failed, lane="play")   # the reserved lane
 
     def _load(self, track: Track, stream: Stream) -> None:
         start = 0.0
@@ -853,28 +857,46 @@ class Playback(QObject):
             self.source_changed.emit(local)
 
     def _skip_after_error(self, track: Track, exc) -> None:
-        log.error("Can’t play %s: %s", track.title, exc)
+        """What a song that can't play does next depends on why (see providers.errors): a song gone
+        or blocked is skipped with the reason; trouble that would hit every song (no connection, a
+        provider asking for a pause, an outdated extractor) stops instead of skipping through the
+        queue; anything else skips, and three in a row stop."""
+        from aria.providers import errors
+        failure = errors.classify(exc, track.source)
+        log.error("Can’t play %s (%s): %s", track.title, failure.kind.value, errors.redact(str(exc)))
+        if failure.kind in (errors.ErrorKind.NETWORK, errors.ErrorKind.TIMEOUT, errors.ErrorKind.RATE_LIMITED,
+                            errors.ErrorKind.EXTRACTOR_OUTDATED):
+            self._failures = 0
+            self.notice.emit("danger", failure.safe_message)
+            self._resume_at = (track.key, self._last_pos[0]) if self._last_pos[0] > 2 else None
+            self.player.stop()
+            self.state_changed.emit(self.state)
+            return
         self._failures += 1
         if self._failures >= 3:
             self._failures = 0
             self.notice.emit("danger", "Several songs failed — stopped")
             self.stop()
             return
-        self.notice.emit("warning", "Couldn’t play — skipped")
+        reason = failure.safe_message if failure.kind != errors.ErrorKind.UNKNOWN else "Couldn’t play"
+        self.notice.emit("warning", f"{reason} — skipped")
         self._auto("skipped", self.next)
 
     def _prefetch(self) -> None:
-        """Resolve the next streams ahead of time so the change-over is instant."""
-        for nxt in self.queue[:2]:
-            self.warm(nxt)
+        """Resolve the next streams ahead of time so the change-over is instant: the song right
+        after this one in the reserved lane, the one after that as ordinary background work."""
+        for i, nxt in enumerate(self.queue[:2]):
+            self.warm(nxt, lane="play" if i == 0 else "io")
 
-    def warm(self, track: Track) -> None:
-        """Resolve ``track``'s stream in the background (e.g. when it's selected)."""
+    def warm(self, track: Track, lane: str = "io") -> None:
+        """Resolve ``track``'s stream in the background (e.g. when it's selected). Only the address
+        (no audio); skipped while its provider asked for a pause; a stale answer only fills the
+        cache, it never plays."""
         if track.source == LOCAL or providers.has_fresh_stream(track) or track.key in self._warming:
             return
         self._warming.add(track.key)
         done = lambda _r: self._warming.discard(track.key)  # noqa: E731
-        tasks.run(lambda: providers.stream(track), done, done)
+        tasks.run(lambda: providers.stream(track, background=True), done, done, lane=lane)
 
     # ---- seamless transitions ------------------------------------------------
 
@@ -900,7 +922,7 @@ class Playback(QObject):
             return
         stream = providers.cached_stream(nxt)
         if stream is None:
-            self.warm(nxt)              # not ready: fall back to a normal change at the end
+            self.warm(nxt, lane="play")     # not ready: fall back to a normal change at the end
             return
         if not self.crossfading:
             self._armed = nxt
@@ -1046,6 +1068,7 @@ class Playback(QObject):
             self._pause_on_start = False
             self.player.pause()
             self._paused_at = time.monotonic()
+
         if state == PLAYING:
             self._failures = 0
             self._retried_key = None
@@ -1055,6 +1078,14 @@ class Playback(QObject):
         self.state_changed.emit(self.state)
 
     def _on_ended(self) -> None:
+        pos, length = self._last_pos
+        cur = self.current
+        if cur is not None and not self.playing_local and length > 30 and pos < length - 8 \
+                and self._retried_key != cur.key:
+            # a stream that stopped long before its end lost its connection: that's not the end
+            log.info("Stream stopped at %.0f of %.0f s — picking it up again: %s", pos, length, cur.title)
+            self._recover(cur)
+            return
         if self.repeat == "one" and self.current:
             self._start(self.current)       # cached stream → restarts instantly
             return
@@ -1079,13 +1110,32 @@ class Playback(QObject):
         track = self.current
         if not track:
             return
-        # Remote URLs expire; retry once with a freshly resolved stream.
-        if self._retried_key != track.key and not track.local_path:
-            self._retried_key = track.key
-            log.info("Refreshing stream: %s", track.title)
-            self._start(track, force=True)
+        # Remote addresses expire (403) or drop: once, a fresh address from where it was.
+        if self._retried_key != track.key and not self.playing_local:
+            self._recover(track)
             return
-        self._skip_after_error(track, "playback error")
+        self._skip_after_error(track, "unplayable: playback error" if not self.playing_local
+                               else "unplayable: the file can’t be opened")
+
+    def _recover(self, track: Track) -> None:
+        """A fresh address for the song, from the same moment. Playing: it carries on at once.
+        Paused: it stays paused — the new address is fetched ahead and the song continues from
+        that moment when Play is pressed (it never starts by itself). Once per song; after that
+        a failure is a failure."""
+        self._retried_key = track.key
+        providers.forget_stream(track)
+        pos, length = self._last_pos
+        if pos > 2:
+            self._resume_at = (track.key, pos)
+        if self.player.state == PAUSED:
+            log.info("Stream lost while paused — ready to continue: %s", track.title)
+            self.player.stop()
+            self.position_changed.emit(pos, length)           # still shown where it waits
+            self.state_changed.emit(self.state)
+            self.warm(track, lane="play")
+            return
+        log.info("Refreshing stream: %s", track.title)
+        self._start(track, force=True)
 
     def shutdown(self) -> None:
         self._saver.flush()

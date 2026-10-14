@@ -6,7 +6,8 @@ while the cases after it ease aside. Every row keeps that much room free at
 its end, so nothing is covered, clipped or re-wrapped. Only the row in motion
 is repainted, and nothing redraws while the rack is idle.
 
-Shared by the Library and playlist pages (Disc Rack) and the Shelf (Spine).
+Shared by the Library (Disc Rack) and the Shelf (Spine). ``RackPanel`` also holds the Library's
+cover wall (Collage), which takes the same items.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QLinearGradient, QPainter, QPain
 from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from aria.ui import icons
-from aria.ui.theme import font, theme
+from aria.ui.theme import MICRO_MS, STANDARD_MS, font, theme
 from aria.ui.widgets import tint as tint_mod
 from aria.ui.widgets.tracklist import paint_empty
 
@@ -30,13 +31,10 @@ BOTTOM_ROOM = 20
 MARGIN = 16
 GAP = 3
 LIFT = 7
-ANIM_MS = 190
-KIND_ICON = {"single": "disc", "album": "disc", "playlist": "list"}
+KIND_ICON = {"single": "disc", "album": "disc", "playlist": "list", "smart": "smart"}
 # Offline state: full = every song downloaded, partial = some, none = streams only.
 STATUS_TEXT = {"full": "Available Offline", "partial": "Partially Downloaded", "none": "Stream Only"}
 SHORT_STATUS = {"full": "Offline", "partial": "Partly Offline", "none": "Streaming"}
-
-reduce_motion = False         # set from the settings: hover state changes instantly
 
 
 @dataclass
@@ -44,10 +42,11 @@ class RackItem:
     key: str
     title: str
     subtitle: str = ""
-    kind: str = "single"                                    # single | album | playlist
+    kind: str = "single"                                    # single | album | playlist | smart
     cover: Callable[[], QPixmap | None] = field(default=lambda: None)
     tooltip: str = ""
     offline: str = "none"                                   # full | partial | none (worked out when the data changes)
+    thumb: str = ""                                         # the cover's address (a wall asks for it larger)
 
 
 def _square(pm: QPixmap, side: int, dpr: float) -> QPixmap:
@@ -125,7 +124,7 @@ class RackView(QWidget):
         self._update_item(old)
         self._update_item(i)
         if i >= 0:
-            self._ensure_visible(i)
+            self.ensure_visible(i)
         if emit:
             self.selection_changed.emit(i)
 
@@ -136,6 +135,16 @@ class RackView(QWidget):
     def refresh_covers(self) -> None:
         """A cover finished loading somewhere: repaint (cache keys follow the pixmaps)."""
         self.update()
+
+    def index_at_y(self, y: float) -> int:
+        """The first case on the row showing at height ``y`` (the place to keep when the view changes)."""
+        if not self.items:
+            return -1
+        row = max(0, int(y + TOP_ROOM) // self._row_h())
+        return min(len(self.items) - 1, row * self._cols())
+
+    def top_of(self, i: int) -> int:
+        return (i // self._cols()) * self._row_h() if i >= 0 else 0
 
     # ---- geometry ------------------------------------------------------------
 
@@ -201,7 +210,7 @@ class RackView(QWidget):
     def sizeHint(self) -> QSize:
         return QSize(600, self._row_h() * 2)
 
-    def _ensure_visible(self, i: int) -> None:
+    def ensure_visible(self, i: int) -> None:
         area = self.parent().parent() if self.parent() else None
         if area is not None and hasattr(area, "ensureVisible"):
             r = self._rect(i).toAlignedRect()
@@ -216,7 +225,7 @@ class RackView(QWidget):
         if anim:
             anim.stop()
         start = self._pull.get(i, 0.0)
-        if reduce_motion or abs(start - target) < 0.01:
+        if theme.reduce_motion or abs(start - target) < 0.01:
             self._set_pull(i, target)
             return
         # Only the newest pulls keep animating: sweeping across the rack never piles work up.
@@ -226,7 +235,7 @@ class RackView(QWidget):
             del self._anims[j]
             self._set_pull(j, old.endValue())
         anim = QVariantAnimation(self)
-        anim.setDuration(int(ANIM_MS * abs(target - start)) + 40)
+        anim.setDuration(max(MICRO_MS, int(STANDARD_MS * abs(target - start))))
         anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         anim.setStartValue(start)
         anim.setEndValue(target)
@@ -653,7 +662,8 @@ class RackView(QWidget):
 
 
 class DetailStrip(QWidget):
-    """Cover, name and details of the selected case, with a few actions on the right."""
+    """Cover, name and details of the selected case, with a few actions on the right. It keeps
+    its place with nothing selected (empty), so choosing a case never moves the rack."""
 
     def __init__(self):
         from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout
@@ -680,6 +690,18 @@ class DetailStrip(QWidget):
         self.buttons.setSpacing(4)
         lay.addLayout(self.buttons)
 
+    def clear(self) -> None:
+        self.art.clear()
+        self.title.set_full_text("")
+        self.sub.set_full_text("")
+        self._enable(False)
+
+    def _enable(self, on: bool) -> None:
+        for i in range(self.buttons.count()):
+            w = self.buttons.itemAt(i).widget()
+            if w is not None:
+                w.setEnabled(on)
+
     def show_item(self, cover: QPixmap | None, title: str, sub: str) -> None:
         dpr = self.devicePixelRatioF()
         pm = QPixmap(round(48 * dpr), round(48 * dpr))
@@ -701,12 +723,13 @@ class DetailStrip(QWidget):
         self.art.setPixmap(pm)
         self.title.set_full_text(title)
         self.sub.set_full_text(sub)
+        self._enable(True)
 
 
 class RackPanel(QWidget):
-    """A scrolling rack plus a slim detail strip for the selected case."""
+    """A scrolling rack (or cover wall) plus a slim detail strip for the selected item."""
 
-    def __init__(self, rack: RackView, empty: tuple[str, str, str] = ("disc", "", "")):
+    def __init__(self, rack, empty: tuple[str, str, str] = ("disc", "", ""), detail: bool = True):
         from PySide6.QtWidgets import QVBoxLayout
 
         from aria.ui.widgets.tracklist import plain_scroll
@@ -721,7 +744,8 @@ class RackPanel(QWidget):
         self.scroll.verticalScrollBar().setSingleStep(30)
         lay.addWidget(self.scroll, 1)
         self.detail = DetailStrip()
-        self.detail.hide()
+        self.detail.setVisible(detail)
+        self.detail.clear()
         lay.addWidget(self.detail)
 
     def add_buttons(self, specs) -> None:
@@ -742,14 +766,16 @@ class RackPanel(QWidget):
     def show_track(self, tracks, i: int, numbered: bool = False) -> None:
         """The detail strip for song ``i`` (hidden when none is selected); ``numbered`` adds "3 of 12"."""
         from aria.core.models import format_duration
-        if not (0 <= i < len(tracks)):
-            self.detail.hide()
+        if not (0 <= i < len(tracks)) or i >= len(self.rack.items):
+            self.detail.clear()
             return
         t = tracks[i]
         bits = [t.artist, format_duration(t.duration) if t.duration else "", t.source_label,
                 STATUS_TEXT[self.rack.items[i].offline], f"{i + 1} of {len(tracks)}" if numbered else ""]
-        self.detail.show_item(self.rack.items[i].cover(), t.title, " · ".join(b for b in bits if b))
-        self.detail.show()
+        from aria.core import identity
+        title, artist = identity.display(t)
+        bits[0] = artist
+        self.detail.show_item(self.rack.items[i].cover(), title, " · ".join(b for b in bits if b))
 
     def paintEvent(self, _e):
         if not self.rack.items and any(self.empty[1:]):
@@ -773,6 +799,6 @@ def track_items(tracks, local_of=None) -> list[RackItem]:
         local = local_of(t) if local_of else (t.local_path if t.local_path and os.path.exists(t.local_path) else "")
         out.append(RackItem(key=t.key, title=title, subtitle=artist,
                             kind="single", tooltip=f"{t.title}\n{t.artist}" if t.artist else t.title,
-                            offline="full" if local else "none",
+                            offline="full" if local else "none", thumb=t.thumbnail,
                             cover=(lambda u=t.thumbnail: thumbs.get(u, 180) if u else None)))
     return out

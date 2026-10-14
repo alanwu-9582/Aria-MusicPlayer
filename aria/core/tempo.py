@@ -355,7 +355,7 @@ class TempoLibrary(QObject):
             work = lambda: _pool.pool().submit(analyze_in_worker, t.to_dict()).result(timeout=120)  # noqa: E731
         else:
             work = lambda: analyze(t, self.stream_fn)  # noqa: E731
-        tasks.run(work, done, failed)
+        tasks.run(work, done, failed, lane="bulk")
 
     def flush(self) -> None:
         self._saver.flush()

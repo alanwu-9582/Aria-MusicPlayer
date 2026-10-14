@@ -9,7 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEasingCurve, QObject, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QImage, QPixmap
 
-from aria.ui.theme import theme
+from aria.ui.theme import EMPHASIS_MS, theme
 
 _cache: dict[int, tuple[float, float] | None] = {}
 
@@ -61,7 +61,7 @@ def mix(a: QColor, b: QColor, t: float) -> QColor:
 
 
 class TintAnimator(QObject):
-    """Holds the current tint and eases to new ones (250 ms)."""
+    """Holds the current tint and eases to new ones (an Emphasis change, with the cover)."""
 
     changed = Signal()
 
@@ -71,7 +71,7 @@ class TintAnimator(QObject):
         self.progress = 1.0
         self._from: QColor | None = None
         self._anim = QVariantAnimation(self)
-        self._anim.setDuration(250)
+        self._anim.setDuration(EMPHASIS_MS)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -85,6 +85,9 @@ class TintAnimator(QObject):
         self._kind = kind
         self.hs = hs
         self._anim.stop()
+        if theme.reduce_motion:
+            self._step(1.0)
+            return
         self._anim.start()
 
     def _step(self, v) -> None:

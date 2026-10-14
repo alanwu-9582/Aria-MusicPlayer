@@ -176,7 +176,7 @@ class SourceSwitcher(QObject):
             self._missing.append(t.title)
             self._next()
 
-        tasks.run(work, done, failed)
+        tasks.run(work, done, failed, lane="bulk")
 
     def apply(self, old: Track, new: Track) -> None:
         """Put ``new`` everywhere ``old`` was, keeping what belongs to the song."""

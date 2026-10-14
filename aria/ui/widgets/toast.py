@@ -1,4 +1,5 @@
-"""Toast (§4.14): bottom-centre, 40 high, dark translucent, status dot, 180 ms fade, 2.6 s stay."""
+"""Toast (§4.14): bottom-centre, 40 high, dark translucent, status dot, a Standard fade, 2.6 s stay.
+A new message while one shows takes its place without fading out and in again."""
 
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
-from aria.ui.theme import TOAST, font, parse_color, theme
+from aria.ui.theme import STANDARD_MS, TOAST, font, parse_color, theme
 
 DOT = {"info": "accent", "success": "green", "warning": "orange", "danger": "red"}
 
@@ -20,7 +21,7 @@ class Toast(QWidget):
         self._effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self._effect)
         self._fade = QPropertyAnimation(self._effect, b"opacity", self)
-        self._fade.setDuration(180)
+        self._fade.setDuration(STANDARD_MS)
         self._fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._fade.finished.connect(self._done)
         self._timer = QTimer(self)

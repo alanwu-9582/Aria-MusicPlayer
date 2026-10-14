@@ -16,6 +16,7 @@ from urllib.parse import unquote
 from aria.core import textnorm
 from aria.core.models import SPOTIFY, Stream, Track
 from aria.providers import http
+from aria.providers.errors import ProviderCapabilities
 from aria.providers.base import Provider
 from aria.providers.youtube import YouTube
 
@@ -37,6 +38,7 @@ def _artists(entity: dict) -> str:
 
 class Spotify(Provider):
     source = SPOTIFY
+    capabilities = ProviderCapabilities(metadata=True, streaming=True, download=True, albums=True, playlists=True)  # (audio through a matched YouTube video)
 
     def __init__(self, youtube: YouTube):
         self.youtube = youtube

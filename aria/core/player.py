@@ -184,8 +184,8 @@ class Player(QObject):
 
     # ---- commands ----------------------------------------------------------------
 
-    def load(self, stream: Stream, start: float = 0, fade_in: float = 0.0) -> None:
-        """Play on the active deck, silencing everything else."""
+    def load(self, stream: Stream, start: float = 0, fade_in: float = 0.0, paused: bool = False) -> None:
+        """Play on the active deck, silencing everything else (``paused``: open it and wait there)."""
         self._fades.clear()
         self._pending_xfade = None
         self._queued = None
@@ -197,7 +197,7 @@ class Player(QObject):
         self._soft = 1.0
         self._cued = False
         self._apply()
-        self.deck.load(stream, start)
+        self.deck.load(stream, start, paused)
         if fade_in:
             self._pending_xfade = (self.deck, fade_in)   # fade in once audio starts
 
