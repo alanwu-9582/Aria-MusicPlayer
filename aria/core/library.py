@@ -204,7 +204,6 @@ class Downloader(QObject):
 
     MIN_FREE = 300 * 1024 * 1024         # don't start a song with less free space than this
     STOP_FREE = 80 * 1024 * 1024         # stop a song that's downloading when it gets this low
-    after = None                         # (track with its file, lyrics or None) → called on the GUI thread
 
     def __init__(self):
         super().__init__()
@@ -288,18 +287,10 @@ class Downloader(QObject):
         verifying = tasks.Progress(lambda _d, _t: self.progress.emit(f"Verifying {label}", bar(1.0)))
         report(0.0)
 
-        def done(result) -> None:
-            path, lyr = result
+        def done(path) -> None:
             self._ok += 1
             log.info("↓ “%s”", track.title)
             self.finished.emit(track.key, path)
-            if self.after is not None:
-                done_track = track.copy()
-                done_track.local_path = path
-                try:
-                    self.after(done_track, lyr)
-                except Exception as exc:
-                    log.warning("After-download step failed: %s", exc)
             self._next()
 
         def failed(exc: Exception) -> None:
@@ -316,15 +307,14 @@ class Downloader(QObject):
 
         def work():
             path = self._fetch(track, report, verifying)
-            lyr = None
             try:                                         # its lyrics beside it (the best kind first); optional
                 from aria.core import lyrics
                 beside = track.copy()
                 beside.local_path = path
-                lyr = lyrics.fetch(beside, False, prefer_words=True)
+                lyrics.fetch(beside, False, prefer_words=True)
             except Exception as exc:
                 log.warning("No lyrics file for “%s”: %s", track.title, exc)
-            return path, lyr
+            return path
 
         tasks.run(work, done, failed, lane="download")
 

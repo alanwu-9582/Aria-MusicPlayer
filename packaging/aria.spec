@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parent
 VLC = ROOT / "vlc-3.0.18"
@@ -13,23 +13,20 @@ datas += [(str(ROOT / "aria" / "core" / "t2s.txt"), "aria/core")]
 # libVLC as plain files: its plugins are loaded by VLC itself, not something PyInstaller should analyse
 datas += [(str(VLC / f), "vlc-3.0.18") for f in ("libvlc.dll", "libvlccore.dll", "COPYING.txt")]
 datas += [(str(VLC / "plugins"), "vlc-3.0.18/plugins")]
-datas += collect_data_files("yt_dlp_ejs") + collect_data_files("faster_whisper")
+datas += collect_data_files("yt_dlp_ejs")
 datas += copy_metadata("yt-dlp") + copy_metadata("yt-dlp-ejs")      # versions compared by the updater
 
-hiddenimports = collect_submodules("yt_dlp") + collect_submodules("yt_dlp_ejs") + ["faster_whisper"]
+hiddenimports = collect_submodules("yt_dlp") + collect_submodules("yt_dlp_ejs")
 
 # Packages that happen to be installed next to Aria's but that it never uses.
 excludes = ["tkinter", "PyQt5", "PyQt6", "matplotlib", "IPython", "jupyter_client", "jupyter_core",
             "pandas", "cv2", "sympy", "PIL", "torch", "tensorflow", "scipy", "pytest", "setuptools", "pkg_resources",
-            "pygments", "docutils", "notebook", "zmq", "tornado",
-            # optional extras of faster-whisper's / yt-dlp's dependencies
-            "pyarrow", "aiohttp", "pydantic", "pydantic_core", "cryptography", "hf_xet"]
+            "pygments", "docutils", "notebook", "zmq", "tornado", "pyarrow", "aiohttp", "pydantic", "cryptography"]
 
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
     datas=datas,
-    binaries=collect_dynamic_libs("ctranslate2"),
     hiddenimports=hiddenimports,
     excludes=excludes,
     # as plain .py files, so a newer yt-dlp in data/packages can take their place (aria.paths)

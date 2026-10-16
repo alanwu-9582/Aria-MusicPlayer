@@ -79,8 +79,6 @@ class MainWindow(QMainWindow):
 
         self.toast_widget = Toast(central)
         self.actions = TrackActions(playback, library, downloader, playlists, self.toast)
-        from aria.core.aligner import ModelManager
-        self.models = ModelManager()                 # speech model downloads (Forced Alignment)
         from aria.core.switch import SourceSwitcher
         self.switcher = SourceSwitcher(library, playlists, playback)
         self.actions.switcher = self.switcher
@@ -205,8 +203,6 @@ class MainWindow(QMainWindow):
         self.downloader.progress.connect(lambda text, f: self.status.set_job(text, f))
         self.downloader.stopped.connect(lambda why: (self.status.set_job(None), self.toast("warning", why)))
         QTimer.singleShot(8000, self.downloader.resume)        # downloads left unfinished last time
-        # a finished download with line-synced lyrics: its words get timed too (Word-by-Word Everything)
-        self.downloader.after = lambda t, lyr: self.now_page.words.request(t, lyr, t.local_path)
         self.downloader.finished.connect(self.library.set_local)
         self.downloader.finished.connect(self.playlists.set_local)
         self.downloader.finished.connect(pb.local_available)
@@ -382,8 +378,6 @@ class MainWindow(QMainWindow):
         if key == "lyrics_tap_sync":
             from aria.ui.widgets.lyrics_view import LyricsView
             LyricsView.tap_sync = value in ("on", "smooth")
-        if key == "lyrics_words_all" and value:
-            self.now_page.refine_words()                                 # the playing song's words now
         if key == "collage_centre" and self.immersive is not None:
             self.immersive.collage.set_centre(int(value))
             self.immersive._arrange()

@@ -1,6 +1,6 @@
 """Aria MusicPlayer."""
 
-__version__ = "2.35.1"
+__version__ = "2.36.0"
 
 import sys as _sys
 

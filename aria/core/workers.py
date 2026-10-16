@@ -1,7 +1,6 @@
 """One background process of its own, at idle priority — for work too heavy for a thread.
 
-Resolving streams (yt-dlp), decoding audio and running a speech model are Python- and
-CPU-heavy; in a thread they would compete with the interface for the interpreter lock and make
+Resolving streams (yt-dlp) and decoding audio (BPM analysis) are Python- and CPU-heavy; in a thread they would compete with the interface for the interpreter lock and make
 it stutter. Each :class:`IdleWorker` starts one spawned process on first use (only spare CPU —
 and the helpers it starts inherit that), keeps it for the next job, and can be shut down (e.g.
 to release a model's files). No Qt here: the worker process imports this module too.

@@ -87,8 +87,6 @@ def main() -> int:
     balance.shutdown()                 # other apps get their own volume back
     listening.flush()
     tempo.shutdown()
-    from aria.core import aligner
-    aligner.shutdown_worker()
     playback.shutdown()
     settings.flush()
     library.flush()

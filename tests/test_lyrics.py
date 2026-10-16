@@ -93,36 +93,6 @@ def test_versions_are_different_recordings():
     assert version_tags("Official Music Video") == set()
 
 
-def test_forced_alignment_places_lines_from_a_rough_transcript():
-    from aria.core import aligner
-    lines = ["君の名前を呼んだ", "夜明けの空に", "", "消えていく声", "まだ遠くへ", "もう一度だけ歌ってほしい"]
-    starts = [10.0, 14.0, 21.0, 25.0, 29.0]
-    words = []
-    for (ln, t) in zip([x for x in lines if x], starts):
-        heard = ln.replace("呼んだ", "読んだ").replace("ほしい", "欲しい")      # the model mishears a little
-        for k, ch in enumerate(heard):
-            words.append((t + 0.3 * k, t + 0.3 * k + 0.25, ch))
-    found = aligner.match_lines(lines, words)
-    assert found is not None
-    times, coverage = found
-    assert coverage > 0.7
-    assert all(abs(a - (b + aligner.LAG)) < 0.6 for a, b in zip(times, starts))
-    timed = aligner.timed_lines(lines, times)
-    assert [s for _t, s in timed].count("") == 1 and len(timed) == len(lines)
-
-
-def test_forced_alignment_gives_up_when_it_heard_something_else():
-    from aria.core import aligner
-    lines = ["君の名前を呼んだ", "夜明けの空に", "消えていく声", "まだ遠くへ", "もう一度だけ"]
-    words = [(i * 1.0, i * 1.0 + 0.5, w) for i, w in enumerate("thank you for watching please subscribe".split())]
-    assert aligner.match_lines(lines, words) is None
-
-
-def test_alignment_reads_katakana_and_hiragana_alike():
-    from aria.core import aligner
-    assert aligner._chars("カタカナ, Ｈello!") == aligner._chars("かたかな hello")
-
-
 def test_artist_and_song_are_told_apart_in_mixed_titles():
     from aria.core import identity
     a = identity.parse("胡夏 Xia Hu - Those Bygone Years 那些年", "HuXia胡夏")
@@ -149,25 +119,6 @@ def test_lyrics_in_a_script_the_song_cannot_have_are_refused():
     assert not lang_ok(Track(source="youtube", id="c", title="ヨルシカ - 晴る", artist="ヨルシカ"), ["又回到最初的起点", "记忆中你青涩的脸"])
 
 
-
-
-def test_estimated_word_times_rebuild_each_line_in_order():
-    from aria.core import aligner
-    lines = ["夜に駆ける君と", "沈むように溶けてゆく", "Hello there my friend", "二人だけの空が広がる"]
-    words, t = [], 10.0
-    for ln in lines:                                     # a transcript that heard every character, 0.3 s apart
-        for ch in ln.replace(" ", ""):
-            words.append((t, t + 0.25, ch))
-            t += 0.3
-        t += 1.0
-    times, cov, per = aligner.match_lines(lines, words, with_words=True)
-    for ln, ws, start in zip(lines, per, times):
-        assert "".join(piece for _w, piece in ws) == ln             # the pieces are the line exactly
-        assert ws[0][0] == round(start, 2)                          # the fill starts with the line
-        assert all(a[0] <= b[0] for a, b in zip(ws, ws[1:]))        # and moves forward
-    assert [p for _w, p in per[2]] == ["Hello ", "there ", "my ", "friend"]
-
-
 def test_lrc_files_beside_downloads(tmp_path):
     from aria.core import health, lyrics
     from aria.core.models import Track
@@ -192,8 +143,3 @@ def test_lrc_files_beside_downloads(tmp_path):
     assert not (tmp_path / "Song [abcdefghijk].lrc").exists()
 
 
-def test_aligned_lyrics_with_estimated_words_say_so():
-    from aria.core import lyrics
-    plain = lyrics.Lyrics([(None, "a b")], False, "LRCLIB")
-    al = lyrics._aligned(plain, [(1.0, "a b")], 0.8, [[[1.0, "a "], [1.4, "b"]]])
-    assert al.word_timed and al.label == "Estimated Sync · Word by Word"

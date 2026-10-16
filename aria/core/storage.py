@@ -76,11 +76,7 @@ class Settings:
         "close_to_tray": True,
         "lyrics_enhanced": False,   # also look for lyrics in descriptions / comments
         "lyrics_translation": True, # show translation rows under lyric lines (when the lyrics have them)
-        "lyrics_words_all": False,  # Word-by-Word Everything: line-synced lyrics get estimated word times too
         "lyrics_tap_sync": "off",   # Click to Sync: right-click a line as it starts to shift the timing: off | on | smooth
-        "lyrics_align": False,      # Forced Alignment: time plain lyrics of downloaded songs with a speech model
-        "align_model": "",          # which downloaded model (data/models/<id>)
-        "align_streams": False,     # streamed songs with plain lyrics: download a temporary copy to align
         "mini_pos": "",
         "mini_style": "solid",      # mini player: solid | glass (Liquid Glass)
         "discovery": 0.5,           # recommendations: 0 familiar … 1 unexpected
@@ -110,8 +106,12 @@ class Settings:
     }
 
     def __init__(self):
-        self.values = {**self.DEFAULTS, **read_json(paths.SETTINGS_FILE, {})}
+        saved = read_json(paths.SETTINGS_FILE, {})
+        # only settings this version has: one that was removed doesn't linger in the file
+        self.values = {**self.DEFAULTS, **{k: v for k, v in saved.items() if k in self.DEFAULTS}}
         self._saver = DebouncedSaver(paths.SETTINGS_FILE, lambda: self.values)
+        if set(saved) - set(self.DEFAULTS):
+            self._saver.schedule()                       # written without them now
 
     def __getitem__(self, key: str) -> Any:
         return self.values.get(key, self.DEFAULTS.get(key))

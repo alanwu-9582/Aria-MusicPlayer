@@ -65,7 +65,7 @@ def _fold(text: str) -> str:
 
 def simplified(text: str) -> str:
     """The same words in simplified characters (case and spacing kept): lyric sites often list
-    Mandarin songs that way only (南拳媽媽 → 南拳妈妈)."""
+    Mandarin songs that way only."""
     return text.translate(_T2S)
 
 
@@ -160,8 +160,6 @@ class Song:
 
     def same(self, other: Song) -> bool:
         pa, pb = self.parts, other.parts
-        # A piece shared by both titles while each also has its own name is most
-        # likely the (unknown) artist: "周杰倫 - 晴天" vs "周杰倫 - 七里香".
         shared = set(pa) & set(pb)
         if shared and set(pa) - shared and set(pb) - shared:
             pa = [p for p in pa if p not in shared]
@@ -310,7 +308,7 @@ _NAME_PIECE = re.compile(r"[㐀-鿿぀-ヿ가-힯]+|[a-z0-9]+")
 
 def names_channel(part: str, channel: str) -> float:
     """How much of ``part`` is the channel's name (0..1): pieces of it — CJK runs, latin
-    words — found in the channel, so "胡夏 Xia Hu" matches the channel "HuXia胡夏"."""
+    words — found in the channel"."""
     c = artist_key(channel)
     if not c:
         return 0.0

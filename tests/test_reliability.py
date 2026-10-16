@@ -200,22 +200,6 @@ def test_titles_never_keep_empty_or_half_brackets():
     assert identity.version_tag(live.version) == "Live"
 
 
-def test_line_synced_lyrics_keep_their_lines_and_gain_words():
-    from aria.core import lyrics
-    synced = lyrics.Lyrics([(10.0, "夜に駆ける"), (14.0, ""), (16.0, "沈むように")], True, "LRCLIB")
-    # the alignment heard the lines a little early, with its own spacing
-    result = {"lines": [(9.0, "夜に駆ける"), (12.0, ""), (13.0, "沈むように")],
-              "word_times": [[[9.0, "夜に"], [10.0, "駆ける"]], [], [[13.0, "沈む"], [14.0, "ように"]]]}
-    merged = lyrics.merge_words(synced, result)
-    assert merged.lines == synced.lines and merged.words_estimated and merged.word_timed
-    assert merged.words[0][0][0] == 10.0 and merged.words[2][0][0] == 16.0      # each line starts on its own time
-    assert all(a[0] <= b[0] for a, b in zip(merged.words[0], merged.words[0][1:]))
-    assert merged.words[0][-1][0] < 16.0                                           # never into the next line
-    assert merged.label == "Line Synced · Estimated Words · LRCLIB"
-    back = lyrics.parse_lrc_full(lyrics.to_lrc(merged))
-    assert back.words[0] and lyrics.ESTIMATED in lyrics.to_lrc(merged)
-
-
 class _FakeHTTP:
     """LRCLIB stand-in: answers by query."""
 
@@ -252,7 +236,7 @@ def test_lrclib_word_timing_wins_and_timelines_are_looked_for_before_plain_text(
     word = dict(entry, id=2, syncedLyrics=_lrc(True))
     plain = dict(entry, id=3, plainLyrics="窓の外\n雨が降る\n君を待つ\n夜が明ける\nもう一度\n歌ってほしい")
     synced, _plain = lyrics._from_lrclib(_FakeHTTP({"雨 ヨルシカ": [line, word]}), t)
-    assert synced.word_timed and not synced.words_estimated
+    assert synced.word_timed
     # only plain text in the first searches; a timeline only under the song's name alone
     http = _FakeHTTP({"雨 ヨルシカ": [plain], "t:雨": [line]})
     monkeypatch.setattr(lyrics, "MAX_SEARCHES", 1)
@@ -269,3 +253,25 @@ def test_collage_centre_spans_the_chosen_cells():
         tiles, centre = layout(1600, 900, 40, n)
         cell = (tiles[0].rect.width() + 4) / tiles[0].cols
         assert round((centre.width() + 4) / cell) == n
+
+
+def test_mixed_language_titles_are_searched_one_script_at_a_time():
+    from aria.core import lyrics
+    t = Track(source=YOUTUBE, id="s1", title="田馥甄 Hebe Tien - 小幸運 A Little Happiness (官方歌詞版)", artist="華研國際")
+    assert lyrics.title_variants(t)[:3] == ["小幸運 A Little Happiness", "小幸運", "A Little Happiness"]
+    assert "Sunny Day" in lyrics.title_variants(Track(source=YOUTUBE, id="s2", title="晴天 (Sunny Day)", artist="周杰倫"))
+    http = _FakeHTTP({})
+    lyrics._from_lrclib(http, t)
+    asked = [p.get("q") for p in http.asked if p.get("q")]
+    assert asked.index("小幸運 田馥甄") < asked.index("小幸運 A Little Happiness 田馥甄")     # one script before mixed
+    assert "A Little Happiness Hebe Tien" in asked
+
+
+def test_an_a_dash_b_title_is_also_read_the_other_way():
+    from aria.core import lyrics
+    guess = Track(source=YOUTUBE, id="s3", title="那些年 Those Bygone Years - 胡夏 Hu Xia", artist="華研國際")
+    titles, artist = lyrics._swapped(guess)
+    assert "那些年" in titles and artist == "胡夏 Hu Xia"
+    sure = Track(source=YOUTUBE, id="s4", title="鄧紫棋 G.E.M.《光年之外 Light Years Away》MV", artist="G.E.M. 鄧紫棋")
+    assert lyrics._swapped(sure) is None
+    assert "鄧紫棋 G.E.M" not in lyrics.title_variants(sure)                    # the singer isn't a song name

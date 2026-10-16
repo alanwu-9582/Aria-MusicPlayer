@@ -27,3 +27,19 @@ def test_clicks_are_remembered_per_song(tmp_path, monkeypatch):
     assert again.taps("b") == [-0.33]
     again.clear_taps("a")
     assert lyrics.Prefs().taps("a") == []
+
+
+def test_removed_choices_dont_linger(tmp_path, monkeypatch):
+    import json
+    from aria import paths
+    from aria.core import storage
+    monkeypatch.setattr(lyrics.paths, "DATA_DIR", tmp_path)
+    (tmp_path / "lyrics_prefs.json").write_text(json.dumps({"a": {"offset": 1.5, "no_align": True}, "b": {"no_align": True}}))
+    assert lyrics.Prefs().data == {"a": {"offset": 1.5}}
+    assert json.loads((tmp_path / "lyrics_prefs.json").read_text()) == {"a": {"offset": 1.5}}   # gone from the file too
+    monkeypatch.setattr(paths, "SETTINGS_FILE", tmp_path / "settings.json")
+    (tmp_path / "settings.json").write_text(json.dumps({"volume": 30, "lyrics_align": True}))
+    s = storage.Settings()
+    assert s["volume"] == 30 and "lyrics_align" not in s.values
+    s.flush()
+    assert "lyrics_align" not in json.loads((tmp_path / "settings.json").read_text())

@@ -28,7 +28,7 @@ from aria.ui.pages.base import TintedPage
 from aria.ui.player_bar import ElidedLabel
 from aria.ui.theme import theme
 from aria.ui.widgets.artwork import Artwork
-from aria.ui.widgets.controls import Button, IconButton, add_item, hbox, label, menu_below
+from aria.ui.widgets.controls import IconButton, add_item, hbox, label, menu_below
 from aria.ui.widgets.dialogs import confirm, prompt
 from aria.ui.widgets.lyrics_view import LyricsView
 from aria.ui.widgets.segmented import Segmented
@@ -126,13 +126,11 @@ class NowPlayingPage(TintedPage):
         self.offset_edit.setStyleSheet("QLineEdit#PlainField { border: none; background: transparent; padding: 0; }")
         self.later_btn = IconButton("plus", "Lyrics Later (0.5 s)", tone="secondary")
         self.more_btn = IconButton("more", "More", tone="secondary")
-        self.plain_btn = Button("Use Plain", "borderless")
-        self.align_btn = IconButton("waveform", "Align Again", tone="secondary")
         rv.addLayout(hbox(self.hist_mode, self.back_btn, self.count, self.mode_end_btn, None,
                           self.familiar_btn, self.dial, self.unexpected_btn, 6,
                           self.undo_btn, self.shuffle_btn, self.refresh_btn,
                           self.play_session_btn, self.save_session_btn,
-                          self.plain_btn, self.align_btn, self.earlier_btn, self.offset_edit, self.later_btn, self.more_btn,
+                          self.earlier_btn, self.offset_edit, self.later_btn, self.more_btn,
                           spacing=4))
 
         self.stack = QStackedWidget()
@@ -155,18 +153,7 @@ class NowPlayingPage(TintedPage):
 
         self._lyrics_for: str | None = None
         self.lyric_prefs = lyrics_mod.prefs()
-        self._plain_lyrics: lyrics_mod.Lyrics | None = None       # what an alignment was made from
-        self._aligning: str | None = None                         # song being aligned right now
-        self._align_note = "Aligning…"
-        self._temp_audio: dict[str, str] = {}                     # throwaway copies made to align streamed songs → song
-        self._temp_busy: str | None = None                        # the one being aligned right now
-        self._clear_temp_audio(everything=True)                   # left over from last time
         self._lyrics_ticket = tasks.Latest()
-        from aria.core.word_timing import WordTimer
-        self.words = WordTimer(settings)                          # Word-by-Word Everything
-        self.words.done.connect(self._words_done)
-        self.words.busy_changed.connect(lambda _k: self._update_toolbar())
-        self._word_copy: str | None = None                        # a song being copied to time its words
         self._lyrics_timer = QTimer(self)
         self._lyrics_timer.setSingleShot(True)
         self._lyrics_timer.setInterval(600)
@@ -202,8 +189,6 @@ class NowPlayingPage(TintedPage):
         self.later_btn.clicked.connect(lambda: self._nudge_offset(0.5))
         self.offset_edit.editingFinished.connect(self._typed_offset)
         self.more_btn.clicked.connect(self._more)
-        self.plain_btn.clicked.connect(self._use_plain)
-        self.align_btn.clicked.connect(self._align_again)
         self.lyrics.seek.connect(pb.seek)
         self.lyrics.tapped.connect(self.tap_sync)
         pb.position_changed.connect(lambda pos, _l: self.lyrics.set_position(pos))
@@ -450,10 +435,6 @@ class NowPlayingPage(TintedPage):
         if tab == LYRICS:
             lyr = self.lyrics.lyrics
             text = lyr.label if lyr else ""
-            if lyr is not None and not lyr.synced and self.pb.current and self._aligning == self.pb.current.key:
-                text += f" · {self._align_note}"
-            elif lyr is not None and self.pb.current and self.pb.current.key in (self.words.busy, self._word_copy):
-                text += " · Timing words…"
         elif tab == QUEUE and pb.measuring[1]:
             done, total = pb.measuring
             text = f"Measuring tempo · {done} / {total}"
@@ -486,13 +467,7 @@ class NowPlayingPage(TintedPage):
         }
         lyr = self.lyrics.lyrics if self.lyrics.state == "ready" else None
         timed = tab == LYRICS and lyr is not None and lyr.synced
-        shown.update({self.earlier_btn: timed, self.later_btn: timed, self.offset_edit: timed,
-                      self.plain_btn: timed and lyr.sync == lyrics_mod.ALIGNED})
-        alignable = tab == LYRICS and lyr is not None and (lyr.sync == lyrics_mod.ALIGNED or not lyr.synced) \
-            and self._plain_lyrics is not None and self._can_align(self.pb.current)
-        shown[self.align_btn] = alignable
-        self.align_btn.set_tip("Align Again" if lyr is not None and lyr.synced else "Align")
-        self.align_btn.setEnabled(self._aligning is None)
+        shown.update({self.earlier_btn: timed, self.later_btn: timed, self.offset_edit: timed})
         if lyr is not None and not self.offset_edit.hasFocus():
             self.offset_edit.setText(f"{lyr.offset:+.1f} s")      # shown even at +0.0 s
         for w, on in shown.items():
@@ -525,10 +500,6 @@ class NowPlayingPage(TintedPage):
                 self.lyrics.set_state("ready" if found else "none", found)
                 self.lyrics.set_position(self.pb.player.position())
                 self._update_toolbar()
-                if found is not None and not found.synced:
-                    self._maybe_align(t, found, ticket)
-                elif found is not None:
-                    self._refine_words(t, found, ticket)
 
         def failed(_e):
             if self._lyrics_ticket.is_current(ticket):
@@ -536,70 +507,6 @@ class NowPlayingPage(TintedPage):
                 self._update_toolbar()
 
         tasks.run(lambda: lyrics_mod.fetch(t, enhanced, self.pb.recommender, force=force), done, failed)
-
-    # ---- Word-by-Word Everything ------------------------------------------------------
-
-    def refine_words(self) -> None:
-        """The setting was just turned on: time the playing song's words now."""
-        t, lyr = self.pb.current, self.lyrics.lyrics
-        if t is not None and lyr is not None and self.lyrics.state == "ready":
-            self._refine_words(t, lyr, self._lyrics_ticket.current())
-
-    def _refine_words(self, t, lyr, ticket) -> None:
-        """Line-synced lyrics: word times from earlier, or estimated now from the song's file (a
-        streamed song through a temporary copy, deleted once the song is over)."""
-        import os
-        if not self.words.wanted(lyr):
-            return
-        known = lyrics_mod.estimated_words(t, lyr)
-        if known is not None:
-            self._show_words(known)
-            return
-        if t.local_path and os.path.exists(t.local_path):
-            self.words.request(t, lyr, t.local_path, front=True)
-            return
-        if t.source == "local":
-            return
-        copy = next((p for p, k in self._temp_audio.items() if k == t.key and os.path.exists(p)), None)
-        if copy:
-            self.words.request(t, lyr, copy, front=True, temp=True)
-            return
-        from aria import paths, providers
-        self._word_copy = t.key
-        self._update_toolbar()
-
-        def done(path):
-            self._word_copy = None
-            self._temp_audio[path] = t.key
-            if self.pb.current is not None and self.pb.current.key == t.key:
-                self.words.request(t, lyr, path, front=True, temp=True)
-            else:
-                self._clear_temp_audio()
-            self._update_toolbar()
-
-        def failed(e):
-            self._word_copy = None
-            lyr_log.warning("Couldn’t copy “%s” to time its words: %s", t.title, e)
-            self._update_toolbar()
-
-        tasks.run(lambda: providers.download_to(t, paths.CACHE_DIR / "align_audio"), done, failed, lane="download")
-
-    def _words_done(self, key: str, merged) -> None:
-        cur = self.lyrics.lyrics
-        if merged is None or self.pb.current is None or self.pb.current.key != key or cur is None:
-            self._update_toolbar()
-            self._clear_temp_audio()
-            return
-        if [s for _t, s in cur.lines] == [s for _t, s in merged.lines]:
-            self._show_words(merged)
-        self._clear_temp_audio()
-
-    def _show_words(self, merged) -> None:
-        t = self.pb.current
-        merged.offset = self.lyric_prefs.offset(t.key) if t else 0.0
-        self.lyrics.set_state("ready", merged)
-        self.lyrics.set_position(self.pb.player.position())
-        self._update_toolbar()
 
     def _choose_lyrics(self) -> None:
         t = self.pb.current
@@ -657,146 +564,6 @@ class NowPlayingPage(TintedPage):
         self.lyrics.changed.emit()                      # Immersive Mode shows the same lyrics
         self._update_toolbar()
 
-    def _can_align(self, t) -> bool:
-        """Forced Alignment is on and ready, and this song is on disk (or streamed songs may be
-        downloaded for it)."""
-        import os
-        from aria.core import aligner
-        if t is None or not self.settings["lyrics_align"] or not aligner.installed(self.settings["align_model"]):
-            return False
-        on_disk = bool(t.local_path and os.path.exists(t.local_path))
-        return (on_disk or (bool(self.settings["align_streams"]) and t.source != "local")) and aligner.engine_available()
-
-    def _maybe_align(self, t, plain, ticket, again: bool = False) -> None:
-        """Plain lyrics: time them with the speech model (when turned on) — from the file on disk,
-        or from a temporary download of a streamed song (when that's turned on too)."""
-        import os
-        self._plain_lyrics = plain
-        if not again:
-            known = lyrics_mod.cached_alignment(t, plain)
-            if known is not None and not self.lyric_prefs.align_off(t.key) and self.settings["lyrics_align"]:
-                self._show_aligned(known, ticket)
-                return
-            if self.lyric_prefs.align_off(t.key):
-                return
-        if not self._can_align(t):
-            return
-        copy = next((p for p, k in self._temp_audio.items() if k == t.key and os.path.exists(p)), None)
-        if t.local_path and os.path.exists(t.local_path):
-            self._run_align(t, plain, ticket, t.local_path)
-        elif copy:
-            self._run_align(t, plain, ticket, copy, temp=True)      # downloaded already for this song
-        else:
-            self._align_from_download(t, plain, ticket)
-
-    def _align_again(self) -> None:
-        """Time this song's lyrics afresh (also after Use Plain)."""
-        t, plain = self.pb.current, self._plain_lyrics
-        if t is None or plain is None or self._aligning is not None:
-            return
-        self.lyric_prefs.set_align_off(t.key, False)
-        self.lyrics.set_state("ready", plain)              # the words untimed while it listens again
-        self._maybe_align(t, plain, self._lyrics_ticket.current(), again=True)
-        self._update_toolbar()
-
-    def _run_align(self, t, plain, ticket, path: str, temp: bool = False) -> None:
-        from aria.core import aligner
-        words = [s for _t, s in plain.lines]
-        from aria.core import langid
-        lang = aligner.WHISPER_LANG.get(langid.detect(" ".join(w for w in words[:24] if w)).lang)   # unknown: let it listen
-        model = self.settings["align_model"]
-        self._aligning, self._align_note = t.key, "Aligning…"
-        self._temp_busy = path if temp else None
-        self._update_toolbar()
-
-        def work():
-            # its own idle-priority process: playback and the window never wait for it
-            return aligner.worker().submit(aligner.align_file, path, words, model, lang).result(timeout=1800)
-
-        def finish(result):
-            if self._aligning == t.key:
-                self._aligning = None
-            if temp:
-                self._temp_busy = None
-                if result:
-                    result = dict(result, temp=True)          # made from a copy that's about to go
-            lyr_log.info("Aligned · “%s” · %d%% of lines", t.title, round(100 * result.get("confidence", 0)))                  if result else lyr_log.warning("Couldn’t align “%s”", t.title)
-            if result:
-                aligned = lyrics_mod.save_alignment(t, plain, result)
-                if self._lyrics_ticket.is_current(ticket):
-                    self._show_aligned(aligned, ticket)
-            self._update_toolbar()
-            self._clear_temp_audio()
-
-        tasks.run(work, finish, lambda e: finish(None), lane="bulk")
-
-    def _align_from_download(self, t, plain, ticket) -> None:
-        """A streamed song: download a temporary copy while it plays, align that, and delete the
-        copy once the song is over."""
-        from aria import paths, providers
-        self._aligning, self._align_note = t.key, "Downloading to align…"
-        self._update_toolbar()
-        folder = paths.CACHE_DIR / "align_audio"
-
-        def done(path):
-            self._temp_audio[path] = t.key
-            still = self.pb.current is not None and self.pb.current.key == t.key
-            if not still:                                    # the song is over already: nothing to time now
-                if self._aligning == t.key:
-                    self._aligning = None
-                self._update_toolbar()
-                self._clear_temp_audio()
-                return
-            self._run_align(t, plain, ticket, path, temp=True)
-
-        def failed(e):
-            lyr_log.warning("Couldn’t download “%s” to align: %s", t.title, e)
-            if self._aligning == t.key:
-                self._aligning = None
-            self._update_toolbar()
-
-        lyr_log.info("Downloading “%s” to align its lyrics", t.title)
-        tasks.run(lambda: providers.download_to(t, folder), done, failed, lane="download")
-
-    def _clear_temp_audio(self, everything: bool = False) -> None:
-        """Delete the temporary copies of songs that are over (the playing song keeps its copy until
-        it ends). ``everything``: the whole folder (at start)."""
-        import os
-        import shutil
-        from aria import paths
-        if everything:
-            shutil.rmtree(paths.CACHE_DIR / "align_audio", ignore_errors=True)
-            return
-        playing = self.pb.current.key if self.pb.current else None
-        for path, key in list(self._temp_audio.items()):
-            if path == self._temp_busy or key == playing:
-                continue
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                continue                                     # still open somewhere: next time
-            self._temp_audio.pop(path, None)
-
-    def _show_aligned(self, aligned, ticket) -> None:
-        t = self.pb.current
-        if not self._lyrics_ticket.is_current(ticket) or t is None:
-            return
-        aligned.offset = self.lyric_prefs.offset(t.key)
-        self.lyrics.set_state("ready", aligned)
-        self.lyrics.set_position(self.pb.player.position())
-        self._update_toolbar()
-
-    def _use_plain(self) -> None:
-        """This song's aligned timing is wrong: keep its plain lyrics from now on."""
-        t = self.pb.current
-        if t is None or self._plain_lyrics is None:
-            return
-        self.lyric_prefs.set_align_off(t.key, True)
-        self.lyrics.set_state("ready", self._plain_lyrics)
-        self._update_toolbar()
-
     # ---- updates -------------------------------------------------------------
 
     def show_bpm(self) -> None:
@@ -825,10 +592,7 @@ class NowPlayingPage(TintedPage):
         key = t.key if t else None
         for v in (self.queue_list, self.recs_list, self.hist_list, self.session_list):
             v.set_playing(key)
-        if self._temp_audio:
-            self._clear_temp_audio()                      # the song it was made for is over
         if key != self._lyrics_for:
-            self._plain_lyrics = None
             self.lyrics.set_state("loading" if t else "empty")
             self._lyrics_timer.start()          # wait out quick skips
         self._update_toolbar()

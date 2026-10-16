@@ -38,6 +38,7 @@ VERSION = re.compile(
     r"歌ってみた|弾いてみた|翻唱|カバー|ライブ|現場|伴奏|纯音乐|純音樂|カラオケ|karaoke)(?![A-Za-z])", re.IGNORECASE)
 DECOR = re.compile(
     r"(?<![A-Za-z])(official\s*(?:music\s*)?(?:video|audio|mv|lyric\s*video|visualizer)?|music\s*video|"
+    r"官方歌詞版|官方歌词版|動態歌詞版|动态歌词版|歌詞版|歌词版|字幕版|官方版|"
     r"lyric(?:s)?\s*video|lyrics?|visualizer|audio|video|mv|m/v|pv|4k|hd|hq|1080p|60fps|"
     r"with\s*lyrics|歌詞付き|字幕付き|歌詞|动态歌词|動態歌詞|中字|中日字幕|中文字幕|字幕|完整版|高音質|高音质|官方|公式|"
     r"ミュージックビデオ)(?![A-Za-z])", re.IGNORECASE)

@@ -232,21 +232,9 @@ class SettingsPage(Page):
         lyr = self._group("Lyrics")
         self.lyrics_enh = self._toggle("Deep Lyrics Search", "lyrics_enhanced",
                                        "Also look in video descriptions and comments")
-        self.lyrics_align = self._toggle("Forced Alignment", "lyrics_align",
-                                         "Downloaded songs with only plain lyrics: a speech model listens and times "
-                                         "each line (shown as Synced · Aligned; plain lyrics stay when it can't tell)")
-        lyr.pair(self.lyrics_enh, self.lyrics_align)
-        self.align_streams = self._toggle("Align Streamed Songs", "align_streams",
-                                          "Streamed songs without synced lyrics: download a temporary copy to align "
-                                          "while it plays; the copy is deleted when the song ends")
-        self.lyrics_align.toggled.connect(lambda _on: self._sync_align())
-        lyr.pair(self.align_streams)
         self.lyrics_trans = self._toggle("Lyrics Translation", "lyrics_translation",
                                          "Show a line's translation under it, when the lyrics have one")
-        self.words_all = self._toggle("Word-by-Word Everything", "lyrics_words_all",
-                                      "Line-synced lyrics too: the song is analysed (a streamed one through a "
-                                      "temporary copy) so every word is filled as it's sung")
-        lyr.pair(self.lyrics_trans, self.words_all)
+        lyr.pair(self.lyrics_enh, self.lyrics_trans)
         self.tap_sync = Segmented(["Off", "On", "Smoothed"], compact=True)
         self.tap_sync.setToolTip("Right-click a line as it starts and the timing shifts to match. "
                                  "Smoothed: from the second time on, half the average of the earlier ones "
@@ -255,11 +243,6 @@ class SettingsPage(Page):
         self.tap_sync.set_index(TAP_SYNC.index(mode) if mode in TAP_SYNC else 0)
         self.tap_sync.changed.connect(lambda i: self._set("lyrics_tap_sync", TAP_SYNC[i]))
         lyr.field("Click to Sync", self.tap_sync)
-        from aria.ui.widgets.dialogs import confirm
-        from aria.ui.widgets.models_panel import ModelsPanel
-        self.models = ModelsPanel(settings, window.models, confirm, window.toast, self._sync_align)
-        lyr.field("Speech Models", self.models)
-        self._sync_align()
 
         # ---- appearance
         look = self._group("Appearance")
@@ -364,18 +347,6 @@ class SettingsPage(Page):
         t.setChecked(bool(self.settings[key]))
         t.toggled.connect(lambda on: self._set(key, on))
         return t
-
-    def _sync_align(self) -> None:
-        """Forced Alignment can be turned on once there's an engine and a model to run."""
-        from aria.core import aligner
-        ready = aligner.engine_available() and aligner.installed(self.settings["align_model"])
-        self.lyrics_align.setEnabled(ready)
-        if not ready and self.lyrics_align.isChecked():
-            self.lyrics_align.setChecked(False)
-        if hasattr(self, "align_streams"):
-            self.align_streams.setEnabled(ready and self.lyrics_align.isChecked())
-        if hasattr(self, "words_all"):
-            self.words_all.setEnabled(ready)                      # it needs a speech model too
 
     def _set(self, key: str, value) -> None:
         self.settings[key] = value

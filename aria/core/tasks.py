@@ -6,7 +6,7 @@ crowd out what the listener is waiting for:
 * ``play``     — resolving the song asked for now (and the one right after it): a reserved lane
 * ``io``       — searches, recommendations, lyrics, prefetch and other network work (the default)
 * ``download`` — downloads, one at a time, so a batch never takes the network from playback
-* ``bulk``     — long jobs (model downloads, batch source switching, link checks, backups, waiting on
+* ``bulk``     — long jobs (batch source switching, link checks, backups, waiting on
                  the analysis worker), so they never hold the lanes above
 * ``images``   — thumbnails, so a page of images never delays anything else
 """
