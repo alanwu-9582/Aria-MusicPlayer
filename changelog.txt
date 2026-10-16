@@ -1,6 +1,11 @@
 * v1.0.0-beta (2023/11/12): 測試版
 * v1.0.1-beta (2024/01/18): Bug Fixed
     1. 修復了重新載入後須重啟才可更新音樂名稱
+* v2.36.1 (2026/10/16)
+    1. 安裝版體積縮小（實測）：執行目錄 236.09 → 約 148 MiB（−37 %），安裝檔 66.67 → 約 45 MiB（−32 %）；功能、畫面與播放行為不變，閒置與播放時記憶體各少約 19 MiB，每個 VLC 實例的建立時間由約 0.2 秒降到約 0.08 秒
+    2. VLC 只帶音訊播放用得到的外掛（移除視訊輸出／濾鏡、字幕、光碟、擷取裝置、遠端桌面、串流輸出等），以實際播放 29 種情境（本機各格式、YouTube／Bilibili／SoundCloud 串流、Seek、BPM 轉檔、檔案驗證、輸出裝置）比對完整版，結果與載入的模組完全相同
+    3. 不再把 PyInstaller、setuptools、werkzeug、yaml、psutil、QtNetwork 等用不到的套件與 Qt 外掛打包進去；重複的 libvlccore.dll 與第二套 OpenSSL 一併移除
+    4. 新增專用打包環境（packaging/requirements-build.txt，固定版本）與體積報表工具 packaging/size_report.py；build.py 會自動使用 .venv-build 並在打包後輸出體積報表
 * v2.36.0 (2026/10/16)
     1. 移除所有語音模型功能：Forced Alignment（純文字歌詞對時）、Align Streamed Songs、Word-by-Word Everything、Speech Models 面板、Align／Use Plain 按鈕與相關的背景分析；安裝版不再內含語音引擎（faster-whisper）。逐字填色只用在 LRCLIB 或 .lrc 檔本身就有逐字時間的歌詞；舊版估計出來的逐字時間不再使用
     2. 歌詞更積極地從 LRCLIB 找同步歌詞：中英並列的歌名拆開，先以單一文字的歌名＋歌手搜尋，再試混合寫法；括號中的另一語言名稱與斜線兩側也各自搜尋；「A - B」這類看不出哪邊是歌名的標題，找不到時反過來再找一次（例如「那些年 Those Bygone Years - 胡夏 Hu Xia」）

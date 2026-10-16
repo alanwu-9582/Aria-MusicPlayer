@@ -1,0 +1,83 @@
+{
+ "label": "baseline",
+ "first_idle": {
+  "window_s": 4.555713799898513,
+  "playing_s": null,
+  "cpu_pct": 0.01,
+  "private_mib": 199.5,
+  "working_set_mib": 296.2,
+  "procs": 1
+ },
+ "idle": [
+  {
+   "window_s": 2.5287317999172956,
+   "playing_s": null,
+   "cpu_pct": 0.0,
+   "private_mib": 201.2,
+   "working_set_mib": 298.1,
+   "procs": 1
+  },
+  {
+   "window_s": 2.469878999982029,
+   "playing_s": null,
+   "cpu_pct": 0.01,
+   "private_mib": 201.5,
+   "working_set_mib": 297.5,
+   "procs": 1
+  },
+  {
+   "window_s": 3.81734339997638,
+   "playing_s": null,
+   "cpu_pct": 0.0,
+   "private_mib": 194.3,
+   "working_set_mib": 290.1,
+   "procs": 1
+  }
+ ],
+ "playing": [
+  {
+   "window_s": 2.7750790000427514,
+   "playing_s": 11.189680699957535,
+   "cpu_pct": 0.12,
+   "private_mib": 238.6,
+   "working_set_mib": 323.1,
+   "procs": 1
+  },
+  {
+   "window_s": 2.6170349000021815,
+   "playing_s": 10.685013600043021,
+   "cpu_pct": 0.09,
+   "private_mib": 237.0,
+   "working_set_mib": 307.4,
+   "procs": 1
+  },
+  {
+   "window_s": 2.7931729999836534,
+   "playing_s": 11.255256499978714,
+   "cpu_pct": 0.12,
+   "private_mib": 237.6,
+   "working_set_mib": 277.1,
+   "procs": 1
+  },
+  {
+   "window_s": 2.630707300035283,
+   "playing_s": 10.616953999968246,
+   "cpu_pct": 0.13,
+   "private_mib": 241.2,
+   "working_set_mib": 325.5,
+   "procs": 1
+  }
+ ],
+ "summary": {
+  "first_launch_window_s": 4.56,
+  "warm_window_s": 2.53,
+  "first_playing_s": 10.94,
+  "idle_private_mib": 201.2,
+  "idle_working_set_mib": 297.5,
+  "idle_cpu_pct": 0.0,
+  "playing_private_mib": 238.1,
+  "playing_working_set_mib": 315.25,
+  "playing_cpu_pct": 0.12,
+  "playing_detected": 4
+ }
+}

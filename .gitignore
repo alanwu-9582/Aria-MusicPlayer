@@ -16,3 +16,4 @@ data/
 # packaging output
 /build/
 /dist/
+/.venv-build/

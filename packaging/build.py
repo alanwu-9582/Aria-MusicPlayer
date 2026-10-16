@@ -3,7 +3,10 @@
     python packaging/build.py              # both
     python packaging/build.py --no-installer
 
-Needs PyInstaller (pip install pyinstaller) and, for the installer, Inno Setup 6.
+PyInstaller runs in .venv-build when it exists (packaging/requirements-build.txt: only Aria's own,
+pinned packages, so nothing else installed on the machine ends up in dist/Aria); otherwise in the
+Python running this script. The installer needs Inno Setup 6. Afterwards the size of dist/Aria is
+written to build/size/current.md (packaging/size_report.py).
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
+VENV_PY = ROOT / ".venv-build" / "Scripts" / "python.exe"
 sys.path.insert(0, str(ROOT))
 
 from aria import __version__  # noqa: E402
@@ -58,19 +62,20 @@ def main() -> int:
     except PermissionError:
         print("dist/Aria is in use - close Aria.exe (check the tray) and build again")
         return 1
-    print(f"Building Aria {__version__} ...", flush=True)
-    subprocess.run([sys.executable, "-m", "PyInstaller", str(ROOT / "packaging" / "aria.spec"), "--noconfirm",
+    python = str(VENV_PY) if VENV_PY.exists() else sys.executable
+    print(f"Building Aria {__version__} with {python} ...", flush=True)
+    subprocess.run([python, "-m", "PyInstaller", str(ROOT / "packaging" / "aria.spec"), "--noconfirm",
                     "--clean", "--distpath", str(DIST), "--workpath", str(BUILD / "pyinstaller")], check=True)
     print(f"-> {DIST / 'Aria' / 'Aria.exe'}", flush=True)
 
-    if "--no-installer" in sys.argv:
-        return 0
-    compiler = iscc()
-    if not compiler:
-        print("Inno Setup 6 not found — skipped the installer (https://jrsoftware.org/isdl.php)")
-        return 1
-    subprocess.run([compiler, f"/DAppVersion={__version__}", str(ROOT / "packaging" / "aria.iss")], check=True)
-    print(f"-> {DIST / f'Aria-Setup-{__version__}.exe'}", flush=True)
+    if "--no-installer" not in sys.argv:
+        compiler = iscc()
+        if not compiler:
+            print("Inno Setup 6 not found — skipped the installer (https://jrsoftware.org/isdl.php)")
+            return 1
+        subprocess.run([compiler, f"/DAppVersion={__version__}", str(ROOT / "packaging" / "aria.iss")], check=True)
+        print(f"-> {DIST / f'Aria-Setup-{__version__}.exe'}", flush=True)
+    subprocess.run([sys.executable, str(ROOT / "packaging" / "size_report.py"), "--label", "current"], check=False)
     return 0
 
 

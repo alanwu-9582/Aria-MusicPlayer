@@ -1,0 +1,208 @@
+{
+ "instance_seconds": 0.1,
+ "output_devices": 6,
+ "tone.flac": {
+  "playing": true,
+  "seek": false,
+  "t": 3572,
+  "length": 0,
+  "state": "State.Playing"
+ },
+ "tone.m4a": {
+  "playing": true,
+  "seek": true,
+  "t": 3852,
+  "length": 39962,
+  "state": "State.Playing"
+ },
+ "tone.mka": {
+  "playing": true,
+  "seek": true,
+  "t": 768089192,
+  "length": 768128844,
+  "state": "State.Playing"
+ },
+ "tone.mp3": {
+  "playing": true,
+  "seek": true,
+  "t": 3567,
+  "length": 39890,
+  "state": "State.Playing"
+ },
+ "tone.ogg": {
+  "playing": true,
+  "seek": false,
+  "t": 5810,
+  "length": 39889,
+  "state": "State.Ended"
+ },
+ "tone.opus": {
+  "playing": true,
+  "seek": true,
+  "t": 3781,
+  "length": 39860,
+  "state": "State.Playing"
+ },
+ "tone.webm": {
+  "playing": true,
+  "seek": true,
+  "t": 768091006,
+  "length": 768130679,
+  "state": "State.Playing"
+ },
+ "tone.wma": {
+  "playing": true,
+  "seek": true,
+  "t": 5459,
+  "length": 37939,
+  "state": "State.Playing"
+ },
+ "tone_mp2.mp2": {
+  "playing": true,
+  "seek": true,
+  "t": 3568,
+  "length": 39941,
+  "state": "State.Playing"
+ },
+ "tone.wav": {
+  "playing": true,
+  "seek": true,
+  "t": 3551,
+  "length": 40000,
+  "state": "State.Playing"
+ },
+ "youtube": {
+  "playing": true,
+  "seek": true,
+  "t": 3502,
+  "length": 65301,
+  "state": "State.Playing"
+ },
+ "spotify→youtube": {
+  "playing": true,
+  "seek": true,
+  "t": 3502,
+  "length": 265321,
+  "state": "State.Playing"
+ },
+ "bilibili": {
+  "playing": true,
+  "seek": true,
+  "t": 3853,
+  "length": 270763,
+  "state": "State.Playing"
+ },
+ "soundcloud": {
+  "playing": true,
+  "seek": true,
+  "t": 4467,
+  "length": 7200255,
+  "state": "State.Playing"
+ },
+ "bpm:tone.m4a": {
+  "wav_bytes": 462380,
+  "ok": true
+ },
+ "bpm:tone.opus": {
+  "wav_bytes": 452364,
+  "ok": true
+ },
+ "bpm:youtube": {
+  "wav_bytes": 440924,
+  "ok": true
+ },
+ "bpm:bilibili": {
+  "wav_bytes": 550414,
+  "ok": true
+ },
+ "bpm:soundcloud": {
+  "wav_bytes": 6741036,
+  "ok": true
+ },
+ "check:tone.flac": {
+  "status": 4,
+  "ms": 0
+ },
+ "check:tone.m4a": {
+  "status": 4,
+  "ms": 39962
+ },
+ "check:tone.mka": {
+  "status": 4,
+  "ms": 768128844
+ },
+ "check:tone.mp3": {
+  "status": 4,
+  "ms": 39889
+ },
+ "check:tone.ogg": {
+  "status": 4,
+  "ms": 39889
+ },
+ "check:tone.opus": {
+  "status": 4,
+  "ms": 39860
+ },
+ "check:tone.webm": {
+  "status": 4,
+  "ms": 768130679
+ },
+ "check:tone.wma": {
+  "status": 4,
+  "ms": 37939
+ },
+ "check:tone_mp2.mp2": {
+  "status": 4,
+  "ms": 39907
+ },
+ "check:tone.wav": {
+  "status": 4,
+  "ms": 40000
+ },
+ "modules_used": [
+  "access",
+  "adaptive",
+  "araw",
+  "asf",
+  "audio_format",
+  "avcodec",
+  "cache_read",
+  "copy",
+  "directsound",
+  "es",
+  "faad",
+  "file",
+  "filesystem",
+  "flac",
+  "flacsys",
+  "float_mixer",
+  "gnutls",
+  "memory",
+  "mkv",
+  "mmdevice",
+  "mp4",
+  "mpeg4audio",
+  "mpegaudio",
+  "mpg123",
+  "ogg",
+  "opus",
+  "prefetch",
+  "record",
+  "samplerate",
+  "scaletempo",
+  "simple_channel_mixer",
+  "stream_out_standard",
+  "stream_out_transcode",
+  "taglib",
+  "ugly",
+  "vorbis",
+  "wav"
+ ],
+ "no_module_matched": [
+  "access_demux",
+  "art finder",
+  "meta reader",
+  "stream_filter"
+ ],
+ "log_lines": 9548
+}

@@ -49,11 +49,21 @@ pip install -r requirements.txt
 python main.py
 ```
 
-**自行打包**：需要 PyInstaller，安裝檔另需 [Inno Setup 6](https://jrsoftware.org/isdl.php)。會產生 `dist/Aria/`（含 `Aria.exe` 的執行目錄，可直接執行或整個資料夾複製帶走）與 `dist/Aria-Setup-<版本>.exe`；加上 `--no-installer` 只產生執行目錄。
+**自行打包**：需要 [Inno Setup 6](https://jrsoftware.org/isdl.php) 來產生安裝檔。先建立只含 Aria 依賴（固定版本）的打包環境 `.venv-build`，`build.py` 會自動使用它，避免電腦上其他套件被打包進去：
+
+```bash
+py -3.13 -m venv .venv-build
+```
+
+```bash
+.venv-build\Scripts\python -m pip install -r packaging\requirements-build.txt
+```
 
 ```bash
 python packaging/build.py
 ```
+
+會產生 `dist/Aria/`（含 `Aria.exe` 的執行目錄，可直接執行或整個資料夾複製帶走）與 `dist/Aria-Setup-<版本>.exe`；加上 `--no-installer` 只產生執行目錄。打包後會把 `dist/Aria` 的實際體積寫到 `build/size/current.md`（`packaging/size_report.py`，可加 `--compare` 與先前的報表比較）。VLC 只帶播放音訊用得到的外掛（`packaging/vlc_plugins.py`），各項縮減的依據與實測見 `packaging/SIZE_REPORT.md`。
 
 YouTube 經常改版。若出現「無法播放」，在「主控台」輸入 `update` 更新 yt-dlp 後重新啟動即可（安裝版也可以：新版會放在資料夾的 `packages/`，比內建的新時才使用）。若電腦裝有 [Deno](https://deno.com) 或 Node.js，yt-dlp 會用它解 YouTube 的簽章，相容性更好。
 

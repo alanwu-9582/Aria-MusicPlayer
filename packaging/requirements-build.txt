@@ -1,0 +1,32 @@
+# The packaged build's own environment (.venv-build), pinned to the versions it was tested with.
+# packaging/build.py uses .venv-build when it exists, so nothing else installed on the machine ends
+# up in dist/Aria. Set it up once:
+#   py -3.13 -m venv .venv-build
+#   .venv-build\Scripts\python -m pip install -r packaging\requirements-build.txt
+
+# Aria (requirements.txt, pinned)
+PySide6-Essentials==6.11.2
+shiboken6==6.11.2
+python-vlc==3.0.21203
+yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
+requests==2.32.5
+urllib3==2.6.3
+idna==3.20
+charset-normalizer==3.4.4
+certifi==2022.12.7
+truststore==0.10.4
+comtypes==1.4.11
+numpy==2.4.6
+# yt-dlp's optional helpers that Aria has always shipped with (websocket-based extractors, AES)
+websockets==16.0
+pycryptodomex==3.23.0
+
+# the build tools
+pyinstaller==6.14.2
+pyinstaller-hooks-contrib==2025.5
+altgraph==0.17.4
+pefile==2023.2.7
+pywin32-ctypes==0.2.3
+packaging==24.2
+setuptools==80.9.0
